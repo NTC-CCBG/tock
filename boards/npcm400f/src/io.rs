@@ -3,36 +3,22 @@
 // Copyright Tock Contributors 2022.
 
 use core::fmt::Write;
-use core::panic::PanicInfo;
-use core::ptr::addr_of;
-use core::ptr::addr_of_mut;
-
-use kernel::debug;
 use kernel::debug::IoWrite;
-use kernel::hil::led;
 use kernel::hil::uart;
 use kernel::hil::uart::Configure;
 
-use npcm400::gpio::PinId;
+use npcm400::uart::{Uarte, UARTE0_BASE};
 
-use crate::CHIP;
-use crate::PROCESSES;
-use crate::PROCESS_PRINTER;
-
-/// Writer is used by kernel::debug to panic message to the serial port.
-pub struct Writer {
-    initialized: bool,
+enum Writer {
+    WriterUart(/* initialized */ bool),
+    WriterRtt(&'static segger::rtt::SeggerRttMemory<'static>),
 }
 
-/// Global static for debug writer
-pub static mut WRITER: Writer = Writer { initialized: false };
+static mut WRITER: Writer = Writer::WriterUart(false);
 
-impl Writer {
-    /// Indicate that USART has already been initialized. Trying to double
-    /// initialize USART2 causes STM32F446RE to go into in in-deterministic state.
-    pub fn set_initialized(&mut self) {
-        self.initialized = true;
-    }
+/// Set the RTT memory buffer used to output panic messages.
+pub unsafe fn set_rtt_memory(rtt_memory: &'static segger::rtt::SeggerRttMemory<'static>) {
+    WRITER = Writer::WriterRtt(rtt_memory);
 }
 
 impl Write for Writer {
@@ -44,46 +30,54 @@ impl Write for Writer {
 
 impl IoWrite for Writer {
     fn write(&mut self, buf: &[u8]) -> usize {
-        let rcc = npcm400::rcc::Rcc::new();
-        let uart = npcm400::usart::Usart::new_usart1(&rcc);
-
-        if !self.initialized {
-            self.initialized = true;
-
-            let _ = uart.configure(uart::Parameters {
-                baud_rate: 115200,
-                stop_bits: uart::StopBits::One,
-                parity: uart::Parity::None,
-                hw_flow_control: false,
-                width: uart::Width::Eight,
-            });
-        }
-
-        for &c in buf {
-            uart.send_byte(c);
+        match self {
+            Writer::WriterUart(ref mut initialized) => {
+                // Here, we create a second instance of the Uarte struct.
+                // This is okay because we only call this during a panic, and
+                // we will never actually process the interrupts
+                let uart = Uarte::new(UARTE0_BASE);
+                if !*initialized {
+                    *initialized = true;
+                    let _ = uart.configure(uart::Parameters {
+                        baud_rate: 115200,
+                        stop_bits: uart::StopBits::One,
+                        parity: uart::Parity::None,
+                        hw_flow_control: false,
+                        width: uart::Width::Eight,
+                    });
+                }
+                for &c in buf {
+                    unsafe { uart.send_byte(c) }
+                    while !uart.tx_ready() {}
+                }
+            }
+            Writer::WriterRtt(rtt_memory) => rtt_memory.write_sync(buf),
         }
         buf.len()
     }
 }
 
-/// Panic handler.
+#[cfg(not(test))]
 #[panic_handler]
-pub unsafe fn panic_fmt(info: &PanicInfo) -> ! {
-    // User LD3 is connected to PE09
-    // Have to reinitialize several peripherals because otherwise can't access them here.
-    let rcc = npcm400::rcc::Rcc::new();
-    let syscfg = npcm400::syscfg::Syscfg::new(&rcc);
-    let exti = npcm400::exti::Exti::new(&syscfg);
-    let pin = npcm400::gpio::Pin::new(PinId::PE09, &exti);
-    let gpio_ports = npcm400::gpio::GpioPorts::new(&rcc, &exti);
-    pin.set_ports_ref(&gpio_ports);
-    let led = &mut led::LedHigh::new(&pin);
-    let writer = &mut *addr_of_mut!(WRITER);
+/// Panic handler
+pub unsafe fn panic_fmt(pi: &core::panic::PanicInfo) -> ! {
+    use core::ptr::{addr_of, addr_of_mut};
+    use kernel::debug;
+    use kernel::hil::led;
+    use npcm400::gpio::Pin;
 
+    use crate::CHIP;
+    use crate::PROCESSES;
+    use crate::PROCESS_PRINTER;
+
+    // The nRF52840DK LEDs (see back of board)
+    let led_kernel_pin = &npcm400::gpio::GPIOPin::new(Pin::P0_13);
+    let led = &mut led::LedLow::new(led_kernel_pin);
+    let writer = &mut *addr_of_mut!(WRITER);
     debug::panic(
         &mut [led],
         writer,
-        info,
+        pi,
         &cortexm4f::support::nop,
         &*addr_of!(PROCESSES),
         &*addr_of!(CHIP),

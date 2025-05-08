@@ -2,96 +2,17 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 // Copyright Tock Contributors 2022.
 
-//! Chip trait setup.
-
 use core::fmt::Write;
-use cortexm4f::{CortexM4F, CortexMVariant};
-use kernel::platform::chip::Chip;
+use cortexm4f::{nvic, CortexM4F, CortexMVariant};
 use kernel::platform::chip::InterruptService;
 
-use crate::nvic;
-
-pub struct Stm32f3xx<'a, I: InterruptService + 'a> {
+pub struct NPCM400<'a, I: InterruptService + 'a> {
     mpu: cortexm4f::mpu::MPU,
     userspace_kernel_boundary: cortexm4f::syscall::SysCall,
     interrupt_service: &'a I,
 }
 
-pub struct Stm32f3xxDefaultPeripherals<'a> {
-    pub adc1: crate::adc::Adc<'a>,
-    pub dma: crate::dma::Dma1<'a>,
-    pub exti: &'a crate::exti::Exti<'a>,
-    pub flash: crate::flash::Flash,
-    pub i2c1: crate::i2c::I2C<'a>,
-    pub spi1: crate::spi::Spi<'a>,
-    pub tim2: crate::tim2::Tim2<'a>,
-    pub usart1: crate::usart::Usart<'a>,
-    pub usart2: crate::usart::Usart<'a>,
-    pub usart3: crate::usart::Usart<'a>,
-    pub gpio_ports: crate::gpio::GpioPorts<'a>,
-    pub watchdog: crate::wdt::WindoWdg<'a>,
-}
-
-impl<'a> Stm32f3xxDefaultPeripherals<'a> {
-    pub fn new(rcc: &'a crate::rcc::Rcc, exti: &'a crate::exti::Exti<'a>) -> Self {
-        Self {
-            adc1: crate::adc::Adc::new(rcc),
-            dma: crate::dma::Dma1::new(rcc),
-            exti,
-            flash: crate::flash::Flash::new(),
-            i2c1: crate::i2c::I2C::new_i2c1(rcc),
-            spi1: crate::spi::Spi::new_spi1(rcc),
-            tim2: crate::tim2::Tim2::new(rcc),
-            usart1: crate::usart::Usart::new_usart1(rcc),
-            usart2: crate::usart::Usart::new_usart2(rcc),
-            usart3: crate::usart::Usart::new_usart3(rcc),
-            gpio_ports: crate::gpio::GpioPorts::new(rcc, exti),
-            watchdog: crate::wdt::WindoWdg::new(rcc),
-        }
-    }
-
-    // Setup any circular dependencies and register deferred calls
-    pub fn setup_circular_deps(&'static self) {
-        self.gpio_ports.setup_circular_deps();
-
-        kernel::deferred_call::DeferredCallClient::register(&self.flash);
-        kernel::deferred_call::DeferredCallClient::register(&self.usart1);
-        kernel::deferred_call::DeferredCallClient::register(&self.usart2);
-        kernel::deferred_call::DeferredCallClient::register(&self.usart3);
-    }
-}
-
-impl InterruptService for Stm32f3xxDefaultPeripherals<'_> {
-    unsafe fn service_interrupt(&self, interrupt: u32) -> bool {
-        match interrupt {
-            nvic::USART1 => self.usart1.handle_interrupt(),
-            nvic::USART2 => self.usart2.handle_interrupt(),
-            nvic::USART3 => self.usart3.handle_interrupt(),
-
-            nvic::TIM2 => self.tim2.handle_interrupt(),
-
-            nvic::SPI1 => self.spi1.handle_interrupt(),
-
-            nvic::FLASH => self.flash.handle_interrupt(),
-
-            nvic::I2C1_EV => self.i2c1.handle_event(),
-            nvic::I2C1_ER => self.i2c1.handle_error(),
-            nvic::ADC1_2 => self.adc1.handle_interrupt(),
-
-            nvic::EXTI0 => self.exti.handle_interrupt(),
-            nvic::EXTI1 => self.exti.handle_interrupt(),
-            nvic::EXTI2 => self.exti.handle_interrupt(),
-            nvic::EXTI3 => self.exti.handle_interrupt(),
-            nvic::EXTI4 => self.exti.handle_interrupt(),
-            nvic::EXTI9_5 => self.exti.handle_interrupt(),
-            nvic::EXTI15_10 => self.exti.handle_interrupt(),
-            _ => return false,
-        }
-        true
-    }
-}
-
-impl<'a, I: InterruptService + 'a> Stm32f3xx<'a, I> {
+impl<'a, I: InterruptService + 'a> NPCM400<'a, I> {
     pub unsafe fn new(interrupt_service: &'a I) -> Self {
         Self {
             mpu: cortexm4f::mpu::MPU::new(),
@@ -101,18 +22,116 @@ impl<'a, I: InterruptService + 'a> Stm32f3xx<'a, I> {
     }
 }
 
-impl<'a, I: InterruptService + 'a> Chip for Stm32f3xx<'a, I> {
+/// This struct, when initialized, instantiates all peripheral drivers for the nrf52.
+///
+/// If a board wishes to use only a subset of these peripherals, this
+/// should not be used or imported, and a modified version should be
+/// constructed manually in main.rs.
+pub struct Npcm400DefaultPeripherals<'a> {
+    pub acomp: crate::acomp::Comparator<'a>,
+    pub ecb: crate::aes::AesECB<'a>,
+    pub pwr_clk: crate::power::Power<'a>,
+    pub ble_radio: crate::ble_radio::Radio<'a>,
+    pub trng: crate::trng::Trng<'a>,
+    pub rtc: crate::rtc::Rtc<'a>,
+    pub temp: crate::temperature::Temp<'a>,
+    pub timer0: crate::timer::TimerAlarm<'a>,
+    pub timer1: crate::timer::TimerAlarm<'a>,
+    pub timer2: crate::timer::Timer,
+    pub uarte0: crate::uart::Uarte<'a>,
+    pub spim0: crate::spi::SPIM<'a>,
+    pub twi1: crate::i2c::TWI<'a>,
+    pub spim2: crate::spi::SPIM<'a>,
+    pub adc: crate::adc::Adc<'a>,
+    pub nvmc: crate::nvmc::Nvmc,
+    pub clock: crate::clock::Clock,
+    pub pwm0: crate::pwm::Pwm,
+    pub usbd: crate::usbd::Usbd<'a>,
+    pub gpio_port: crate::gpio::Port<'a, { crate::gpio::NUM_PINS }>,
+}
+
+impl Npcm400DefaultPeripherals<'_> {
+    pub fn new() -> Self {
+        Self {
+            acomp: crate::acomp::Comparator::new(),
+            ecb: crate::aes::AesECB::new(),
+            pwr_clk: crate::power::Power::new(),
+            ble_radio: crate::ble_radio::Radio::new(),
+            trng: crate::trng::Trng::new(),
+            rtc: crate::rtc::Rtc::new(),
+            temp: crate::temperature::Temp::new(),
+            timer0: crate::timer::TimerAlarm::new(0),
+            timer1: crate::timer::TimerAlarm::new(1),
+            timer2: crate::timer::Timer::new(2),
+            uarte0: crate::uart::Uarte::new(crate::uart::UARTE0_BASE),
+            spim0: crate::spi::SPIM::new(0),
+            twi1: crate::i2c::TWI::new_twi1(),
+            spim2: crate::spi::SPIM::new(2),
+            // Default to 3.3 V VDD reference.
+            adc: crate::adc::Adc::new(3300),
+            nvmc: crate::nvmc::Nvmc::new(),
+            clock: crate::clock::Clock::new(),
+            pwm0: crate::pwm::Pwm::new(),
+            usbd: crate::usbd::Usbd::new(),
+            gpio_port: crate::gpio::npcm400_gpio_create(),
+        }
+    }
+    // Necessary for setting up circular dependencies
+    pub fn init(&'static self) {
+        kernel::deferred_call::DeferredCallClient::register(&self.nvmc);
+        self.pwr_clk.set_usb_client(&self.usbd);
+        self.usbd.set_power_ref(&self.pwr_clk);
+    }
+}
+impl kernel::platform::chip::InterruptService for Npcm400DefaultPeripherals<'_> {
+    unsafe fn service_interrupt(&self, interrupt: u32) -> bool {
+        match interrupt {
+            crate::peripheral_interrupts::COMP => self.acomp.handle_interrupt(),
+            crate::peripheral_interrupts::ECB => self.ecb.handle_interrupt(),
+            crate::peripheral_interrupts::POWER_CLOCK => self.pwr_clk.handle_interrupt(),
+            crate::peripheral_interrupts::RADIO => match self.ble_radio.is_enabled() {
+                false => (),
+                true => self.ble_radio.handle_interrupt(),
+            },
+            crate::peripheral_interrupts::RNG => self.trng.handle_interrupt(),
+            crate::peripheral_interrupts::RTC1 => self.rtc.handle_interrupt(),
+            crate::peripheral_interrupts::TEMP => self.temp.handle_interrupt(),
+            crate::peripheral_interrupts::TIMER0 => self.timer0.handle_interrupt(),
+            crate::peripheral_interrupts::TIMER1 => self.timer1.handle_interrupt(),
+            crate::peripheral_interrupts::TIMER2 => self.timer2.handle_interrupt(),
+            crate::peripheral_interrupts::UART0 => self.uarte0.handle_interrupt(),
+            crate::peripheral_interrupts::SPI0_TWI0 => self.spim0.handle_interrupt(),
+            crate::peripheral_interrupts::SPI1_TWI1 => self.twi1.handle_interrupt(),
+            crate::peripheral_interrupts::SPIM2_SPIS2_SPI2 => self.spim2.handle_interrupt(),
+            crate::peripheral_interrupts::ADC => self.adc.handle_interrupt(),
+            crate::peripheral_interrupts::USBD => self.usbd.handle_interrupt(),
+            crate::peripheral_interrupts::GPIOTE => self.gpio_port.handle_interrupt(),
+            _ => return self.service_interrupt(interrupt),
+        }
+        true
+    }
+}
+
+impl<'a, I: InterruptService + 'a> kernel::platform::chip::Chip for NPCM400<'a, I> {
     type MPU = cortexm4f::mpu::MPU;
     type UserspaceKernelBoundary = cortexm4f::syscall::SysCall;
+
+    fn mpu(&self) -> &Self::MPU {
+        &self.mpu
+    }
+
+    fn userspace_kernel_boundary(&self) -> &Self::UserspaceKernelBoundary {
+        &self.userspace_kernel_boundary
+    }
 
     fn service_pending_interrupts(&self) {
         unsafe {
             loop {
-                if let Some(interrupt) = cortexm4f::nvic::next_pending() {
+                if let Some(interrupt) = nvic::next_pending() {
                     if !self.interrupt_service.service_interrupt(interrupt) {
                         panic!("unhandled interrupt {}", interrupt);
                     }
-                    let n = cortexm4f::nvic::Nvic::new(interrupt);
+                    let n = nvic::Nvic::new(interrupt);
                     n.clear_pending();
                     n.enable();
                 } else {
@@ -123,20 +142,11 @@ impl<'a, I: InterruptService + 'a> Chip for Stm32f3xx<'a, I> {
     }
 
     fn has_pending_interrupts(&self) -> bool {
-        unsafe { cortexm4f::nvic::has_pending() }
-    }
-
-    fn mpu(&self) -> &cortexm4f::mpu::MPU {
-        &self.mpu
-    }
-
-    fn userspace_kernel_boundary(&self) -> &cortexm4f::syscall::SysCall {
-        &self.userspace_kernel_boundary
+        unsafe { nvic::has_pending() }
     }
 
     fn sleep(&self) {
         unsafe {
-            cortexm4f::scb::unset_sleepdeep();
             cortexm4f::support::wfi();
         }
     }

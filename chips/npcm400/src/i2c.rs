@@ -2,562 +2,648 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 // Copyright Tock Contributors 2022.
 
-use core::cell::Cell;
+//! Implementation of I2C for nRF52 using EasyDMA.
+//!
+//! This module supports nRF52's two I2C master (`TWI`) peripherals,
+//! and the I2C slave (`TWIS`).
 
 use kernel::hil;
-use kernel::hil::i2c::{self, Error, I2CHwMasterClient, I2CMaster};
-use kernel::platform::chip::ClockInterface;
-use kernel::utilities::cells::{OptionalCell, TakeCell};
+use kernel::utilities::cells::OptionalCell;
+use kernel::utilities::cells::TakeCell;
+use kernel::utilities::cells::VolatileCell;
 use kernel::utilities::registers::interfaces::{ReadWriteable, Readable, Writeable};
-use kernel::utilities::registers::{register_bitfields, ReadWrite};
+use kernel::utilities::registers::{register_bitfields, register_structs, ReadWrite, WriteOnly};
 use kernel::utilities::StaticRef;
+use crate::pinmux::Pinmux;
 
-use crate::rcc;
-
-pub enum I2CSpeed {
-    Speed100k,
-    Speed400k,
-    Speed1M,
-}
-
-/// Inter-Integrated Circuit
-#[repr(C)]
-struct I2CRegisters {
-    /// control register 1
-    cr1: ReadWrite<u32, CR1::Register>,
-    /// control register 2
-    cr2: ReadWrite<u32, CR2::Register>,
-    /// own address register 1
-    oar1: ReadWrite<u32, OAR1::Register>,
-    /// own address register 2
-    oar2: ReadWrite<u32, OAR2::Register>,
-    /// timing register
-    timingr: ReadWrite<u32, TIMINGR::Register>,
-    /// timeout register
-    timeout: ReadWrite<u32, TIMEOUT::Register>,
-    /// interrupt and status register
-    isr: ReadWrite<u32, ISR::Register>,
-    /// interrupt clear register
-    icr: ReadWrite<u32, ICR::Register>,
-    /// PEC register
-    pecr: ReadWrite<u32, PECR::Register>,
-    /// receive data register
-    rxdr: ReadWrite<u32, RXDR::Register>,
-    /// transmit data register
-    txdr: ReadWrite<u32, TXDR::Register>,
-}
-
-register_bitfields![u32,
-    CR1 [
-        /// PEC enable
-        PCEN OFFSET(23) NUMBITS(1) [],
-        /// SMBus alert enable
-        ALERTEN OFFSET(22) NUMBITS(1) [],
-        /// SMBus Device Default address enable
-        SMBDEN OFFSET(21) NUMBITS(1) [],
-        /// SMBus Host address enable
-        SMBHEN OFFSET(20) NUMBITS(1) [],
-        /// General call enable
-        GCEN OFFSET(19) NUMBITS(1) [],
-        /// Wakeup from Stop mode enable
-        WUPEN OFFSET(18) NUMBITS(1) [],
-        /// Clock stretching disable
-        NOSTRETCH OFFSET(17) NUMBITS(1) [],
-        /// Slave byte control
-        SBC OFFSET(16) NUMBITS(1) [],
-        /// DMA reception requests enable
-        RXDMAEN OFFSET(15) NUMBITS(1) [],
-        /// DMA transmission requests enable
-        TXDMAEN OFFSET(14) NUMBITS(1) [],
-        /// Analog noise filter OFF
-        ANOFF OFFSET(12) NUMBITS(1) [],
-        /// Digital noise filter
-        DNF OFFSET(8) NUMBITS(4) [],
-        /// Error interrupts enable
-        ERRIE OFFSET(7) NUMBITS(1) [],
-        /// Transfer Complete interrupt enable
-        TCIE OFFSET(6) NUMBITS(1) [],
-        /// STOP detection Interrupt enable
-        STOPIE OFFSET(5) NUMBITS(1) [],
-        /// Not acknowledge received Interrupt enable
-        NACKIE OFFSET(4) NUMBITS(1) [],
-        /// Address match Interrupt enable (slave only)
-        ADDRIE OFFSET(3) NUMBITS(3) [],
-        /// RX Interrupt enable
-        RXIE OFFSET(2) NUMBITS(1) [],
-        /// TX Interrupt enable
-        TXIE OFFSET(1) NUMBITS(1) [],
-        /// Peripheral enable
-        PE OFFSET(0) NUMBITS(1) []
-    ],
-    CR2 [
-        /// Packet error checking byte
-        PECBYTE OFFSET(26) NUMBITS(1) [],
-        /// Automatic end mode (master mode)
-        AUTOEND OFFSET(25) NUMBITS(1) [],
-        /// NBYTES reload mode
-        RELOAD OFFSET(24) NUMBITS(1) [],
-        /// Number of bytes
-        NBYTES OFFSET(16) NUMBITS(8) [],
-        /// NACK generation (slave mode)
-        NACK OFFSET(15) NUMBITS(1) [],
-        /// Stop generation (master mode)
-        STOP OFFSET(14) NUMBITS(1) [],
-        /// Start generation
-        START OFFSET(13) NUMBITS(1) [],
-        /// 10-bit address header only read direction (master receiver mode)
-        HEAD10R OFFSET(12) NUMBITS(1) [],
-        /// 10-bit addressing mode (master mode)
-        ADD10 OFFSET(11) NUMBITS(1) [],
-        /// Transfer direction (master mode)
-        RD_WRN OFFSET(10) NUMBITS(1) [],
-        /// Slave address bit 9:8 (master mode)
-        SADD8_9 OFFSET(8) NUMBITS(2) [],
-        // Slave address bit 7:1 (master mode)
-        SADD7_1 OFFSET(1) NUMBITS(7) [],
-        /// Slave address bit 0 (master mode)
-        SADD OFFSET(0) NUMBITS(1) []
-    ],
-    OAR1 [
-        /// Own Address 1 enable
-        OA1EN OFFSET(15) NUMBITS(1) [],
-        /// Own Address 1 10-bitmode
-        OA1MODE OFFSET(10) NUMBITS(1) [],
-        /// Interface address
-        OA1 OFFSET(0) NUMBITS(10) []
-    ],
-    OAR2 [
-        /// Own Address 2 enable
-        OA2EN OFFSET(15) NUMBITS(1) [],
-        /// Own Address 2 masks
-        OA2MSK OFFSET(8) NUMBITS(3) [],
-        /// Interface address
-        OA2 OFFSET(1) NUMBITS(7) []
-    ],
-    TIMINGR [
-        /// Timing prescaler
-        PRESC OFFSET(28) NUMBITS(4) [],
-        /// Data setup time
-        SCLDEL OFFSET(20) NUMBITS(4) [],
-        /// Data hold time
-        SDAEL OFFSET(16) NUMBITS(4) [],
-        /// SCL high period (master mode)
-        SCLH OFFSET(8) NUMBITS(8) [],
-        /// SCL low period (master mode)
-        SCLL OFFSET(0) NUMBITS(8) []
-    ],
-    TIMEOUT [
-        /// Extended clock timeout enable
-        TEXTEN OFFSET(31) NUMBITS(1) [],
-        /// Bus timeout B
-        TIMEOUTB OFFSET(16) NUMBITS(12) [],
-        /// Clock timeout enable
-        TIMOUTEN OFFSET(15) NUMBITS(1) [],
-        /// Idle clock timeout detection
-        TIDLE OFFSET(12) NUMBITS(1) [],
-        /// Bus Timeout A
-        TIMEOUTA OFFSET(0) NUMBITS(12) []
-    ],
-    ISR [
-        /// Address match code (slavemode)
-        ADDCODE OFFSET(17) NUMBITS(7) [],
-        /// Transfer direction (slave mode)
-        DIR OFFSET(16) NUMBITS(1) [],
-        /// Bus busy
-        BUSY OFFSET(15) NUMBITS(1) [],
-        /// SMBus alert
-        ALERT OFFSET(13) NUMBITS(1) [],
-        /// Timeout or tLOW detection flag
-        TIMEOUT OFFSET(12) NUMBITS(1) [],
-        /// Bus error
-        PECERR OFFSET(11) NUMBITS(1) [],
-        /// Overrun/Underrun (slave mode)
-        OVR OFFSET(10) NUMBITS(1) [],
-        /// Arbitration lost
-        ARLO OFFSET(9) NUMBITS(1) [],
-        /// Bus error
-        BERR OFFSET(8) NUMBITS(1) [],
-        /// Transfer Complete Reload
-        TCR OFFSET(7) NUMBITS(1) [],
-        /// Transfer Complete (master mode)
-        TC OFFSET(6) NUMBITS(1) [],
-        /// Stop detection flag
-        STOPF OFFSET(5) NUMBITS(1) [],
-        /// Not Acknowledge received flag
-        NACKF OFFSET(4) NUMBITS(1) [],
-        /// Address matched (slave mode)
-        ADDR OFFSET(3) NUMBITS(1) [],
-        /// Receive data register not empty (receivers)
-        RXNE OFFSET(2) NUMBITS(1) [],
-        /// Transmit interrupt status (transmitters)
-        TXIS OFFSET(1) NUMBITS(1) [],
-        /// Transmit data register empty (transmitters)
-        TXE OFFSET(0) NUMBITS(1) []
-    ],
-    ICR [
-        /// Alert flag clear
-        ALERTCF OFFSET(13) NUMBITS(1) [],
-        /// Timeout detection flag clear
-        TIMOUTCF OFFSET(12) NUMBITS(1) [],
-        /// PEC Error flag clear
-        PECCF OFFSET(11) NUMBITS(1) [],
-        /// Overrun/Underrun flag clear
-        OVRCF OFFSET(10) NUMBITS(1) [],
-        /// Arbitration Lost flag clear
-        ARLOCF OFFSET(9) NUMBITS(1) [],
-        /// Bus error flag clear
-        BERRCF OFFSET(8) NUMBITS(1) [],
-        /// Stop detection flag clear
-        STOPCF OFFSET(5) NUMBITS(1) [],
-        /// Not Acknowledge flag clear
-        NACKCF OFFSET(4) NUMBITS(1) [],
-        /// Address matched flag clear
-        ADDRCF OFFSET(3) NUMBITS(1) []
-    ],
-    PECR [
-        /// Packet error checking register
-        PEC OFFSET(0) NUMBITS(8) []
-    ],
-    RXDR [
-        /// 8-bit receive data
-        RXDATA OFFSET(0) NUMBITS(8) []
-    ],
-    TXDR [
-        /// 8-bit transmit data
-        TXDATA OFFSET(0) NUMBITS(8) []
+/// Uninitialized `TWI` instances.
+const INSTANCES: [StaticRef<TwiRegisters>; 2] = unsafe {
+    [
+        StaticRef::new(0x40003000 as *const TwiRegisters),
+        StaticRef::new(0x40004000 as *const TwiRegisters),
     ]
-];
+};
 
-const I2C1_BASE: StaticRef<I2CRegisters> =
-    unsafe { StaticRef::new(0x4000_5400 as *const I2CRegisters) };
-
-// const I2C2_BASE: StaticRef<I2CRegisters> =
-//     unsafe { StaticRef::new(0x4000_5800 as *const I2CRegisters) };
-
-pub struct I2C<'a> {
-    registers: StaticRef<I2CRegisters>,
-    clock: I2CClock<'a>,
-
-    // I2C slave support not yet implemented
-    master_client: OptionalCell<&'a dyn hil::i2c::I2CHwMasterClient>,
-
-    buffer: TakeCell<'static, [u8]>,
-    tx_position: Cell<usize>,
-    rx_position: Cell<usize>,
-    tx_len: Cell<usize>,
-    rx_len: Cell<usize>,
-
-    slave_address: Cell<u8>,
-
-    status: Cell<I2CStatus>,
-    // transfers: Cell<u8>
+/// An I2C master device.
+///
+/// A `TWI` instance wraps a `registers::TWI` together with
+/// additional data necessary to implement an asynchronous interface.
+pub struct TWI<'a> {
+    registers: StaticRef<TwiRegisters>,
+    client: OptionalCell<&'a dyn hil::i2c::I2CHwMasterClient>,
+    slave_client: OptionalCell<&'a dyn hil::i2c::I2CHwSlaveClient>,
+    buf: TakeCell<'static, [u8]>,
+    slave_read_buf: TakeCell<'static, [u8]>,
 }
 
-#[derive(Copy, Clone, PartialEq)]
-enum I2CStatus {
-    Idle,
-    Writing,
-    WritingReading,
-    Reading,
+/// I2C bus speed.
+#[repr(u32)]
+pub enum Speed {
+    K100 = 0x01980000,
+    K250 = 0x04000000,
+    K400 = 0x06400000,
 }
 
-impl<'a> I2C<'a> {
-    fn new(base_addr: StaticRef<I2CRegisters>, clock: I2CClock<'a>) -> Self {
+impl TWI<'_> {
+    const fn new(registers: StaticRef<TwiRegisters>) -> Self {
         Self {
-            registers: base_addr,
-            clock,
-
-            master_client: OptionalCell::empty(),
-
-            slave_address: Cell::new(0),
-
-            buffer: TakeCell::empty(),
-            tx_position: Cell::new(0),
-            rx_position: Cell::new(0),
-
-            tx_len: Cell::new(0),
-            rx_len: Cell::new(0),
-
-            status: Cell::new(I2CStatus::Idle),
+            registers,
+            client: OptionalCell::empty(),
+            slave_client: OptionalCell::empty(),
+            buf: TakeCell::empty(),
+            slave_read_buf: TakeCell::empty(),
         }
     }
 
-    pub fn new_i2c1(rcc: &'a rcc::Rcc) -> Self {
-        Self::new(
-            I2C1_BASE,
-            I2CClock(rcc::PeripheralClock::new(
-                rcc::PeripheralClockType::APB1(rcc::PCLK1::I2C1),
-                rcc,
-            )),
-        )
+    pub const fn new_twi0() -> Self {
+        TWI::new(INSTANCES[0])
     }
 
-    pub fn set_speed(&self, speed: I2CSpeed, system_clock_in_mhz: usize) {
-        self.disable();
-        match speed {
-            I2CSpeed::Speed100k => {
-                let prescaler = system_clock_in_mhz / 4 - 1;
-                self.registers.timingr.modify(
-                    TIMINGR::PRESC.val(prescaler as u32)
-                        + TIMINGR::SCLL.val(19)
-                        + TIMINGR::SCLH.val(15)
-                        + TIMINGR::SDAEL.val(2)
-                        + TIMINGR::SCLDEL.val(4),
-                );
-            }
-            I2CSpeed::Speed400k => {
-                let prescaler = system_clock_in_mhz / 8 - 1;
-                self.registers.timingr.modify(
-                    TIMINGR::PRESC.val(prescaler as u32)
-                        + TIMINGR::SCLL.val(9)
-                        + TIMINGR::SCLH.val(3)
-                        + TIMINGR::SDAEL.val(3)
-                        + TIMINGR::SCLDEL.val(3),
-                );
-            }
-            I2CSpeed::Speed1M => {
-                panic!("i2c speed 1MHz not implemented");
-            }
-        }
-        self.enable();
+    pub const fn new_twi1() -> Self {
+        TWI::new(INSTANCES[1])
     }
 
-    pub fn is_enabled_clock(&self) -> bool {
-        self.clock.is_enabled()
+    /// Configures an already constructed `TWI`.
+    pub fn configure(&self, scl: Pinmux, sda: Pinmux) {
+        self.registers.psel_scl.set(scl);
+        self.registers.psel_sda.set(sda);
     }
 
-    pub fn enable_clock(&self) {
-        self.clock.enable();
+    /// Sets the I2C bus speed to one of three possible values
+    /// enumerated in `Speed`.
+    pub fn set_speed(&self, speed: Speed) {
+        self.registers.frequency.set(speed as u32);
     }
 
-    pub fn disable_clock(&self) {
-        self.clock.disable();
+    /// Clear all pending events
+    /// This is useful when switching between a master and slave mode to ensure
+    /// we start from a clean state.
+    pub fn clear_events(&self) {
+        self.registers.events_stopped.write(EVENT::EVENT::CLEAR);
+        self.registers.events_error.write(EVENT::EVENT::CLEAR);
+        self.registers.events_rxstarted.write(EVENT::EVENT::CLEAR);
+        self.registers.events_txstarted.write(EVENT::EVENT::CLEAR);
+        self.registers.events_write.write(EVENT::EVENT::CLEAR);
+        self.registers.events_read.write(EVENT::EVENT::CLEAR);
+        self.registers.events_suspended.write(EVENT::EVENT::CLEAR);
+        self.registers.events_lastrx.write(EVENT::EVENT::CLEAR);
+        self.registers.events_lasttx.write(EVENT::EVENT::CLEAR);
     }
 
-    pub fn handle_event(&self) {
-        if self.registers.isr.is_set(ISR::TXIS) {
-            // send the next byte
-            if self.buffer.is_some() && self.tx_position.get() < self.tx_len.get() {
-                self.buffer.map(|buf| {
-                    let byte = buf[self.tx_position.get()];
-                    self.registers.txdr.write(TXDR::TXDATA.val(byte as u32));
-                    self.tx_position.set(self.tx_position.get() + 1);
-                });
-            } else {
-                panic!("i2c attempted to read more bytes than the available buffer");
-            }
-        }
+    pub fn disable_interrupts(&self) {
+        // Disable all interrupts
+        self.registers.inten.set(0x00);
+        self.registers.intenclr.set(0xFFFF_FFFF);
+    }
 
-        while self.registers.isr.is_set(ISR::RXNE) {
-            // send the next byte
-            let byte = self.registers.rxdr.read(RXDR::RXDATA) as u8;
-            if self.buffer.is_some() && self.rx_position.get() < self.rx_len.get() {
-                self.buffer.map(|buf| {
-                    buf[self.rx_position.get()] = byte;
-                    self.rx_position.set(self.rx_position.get() + 1);
-                });
-            }
-        }
+    /// Enables hardware TWIM peripheral.
+    fn enable_master(&self) {
+        self.clear_events();
+        self.registers.enable.write(ENABLE::ENABLE::EnableMaster);
+    }
 
-        if self.registers.isr.is_set(ISR::TC) {
-            match self.status.get() {
-                I2CStatus::Writing | I2CStatus::WritingReading => {
-                    if self.tx_position.get() < self.tx_len.get() {
-                        self.registers.cr2.modify(CR2::STOP::SET);
-                        self.stop();
-                        self.master_client.map(|client| {
-                            self.buffer
-                                .take()
-                                .map(|buf| client.command_complete(buf, Err(Error::DataNak)))
-                        });
-                    } else {
-                        if self.status.get() == I2CStatus::Writing {
-                            self.registers.cr2.modify(CR2::STOP::SET);
-                            self.stop();
-                            self.master_client.map(|client| {
-                                self.buffer
-                                    .take()
-                                    .map(|buf| client.command_complete(buf, Ok(())))
-                            });
-                        } else {
-                            self.status.set(I2CStatus::Reading);
-                            self.start_read();
-                        }
+    /// Enables hardware TWIS peripheral.
+    fn enable_slave(&self) {
+        self.clear_events();
+        self.registers.enable.write(ENABLE::ENABLE::EnableSlave);
+    }
+
+    /// Disables hardware TWIM/TWIS peripheral.
+    fn disable(&self) {
+        self.clear_events();
+        self.disable_interrupts();
+        self.registers.enable.write(ENABLE::ENABLE::Disable);
+    }
+
+    pub fn handle_interrupt(&self) {
+        if self.is_master_enabled() {
+            if self.registers.events_stopped.is_set(EVENT::EVENT) {
+                self.registers.events_stopped.write(EVENT::EVENT::CLEAR);
+
+                self.client.map(|client| match self.buf.take() {
+                    None => (),
+                    Some(buf) => {
+                        self.clear_events();
+                        client.command_complete(buf, Ok(()));
                     }
-                }
-                I2CStatus::Reading => {
-                    let status = if self.rx_position.get() == self.rx_len.get() {
-                        Ok(())
-                    } else {
-                        Err(Error::DataNak)
-                    };
-                    self.registers.cr2.modify(CR2::STOP::SET);
-                    self.stop();
-                    self.master_client.map(|client| {
-                        self.buffer
-                            .take()
-                            .map(|buf| client.command_complete(buf, status))
+                });
+            }
+
+            if self.registers.events_error.is_set(EVENT::EVENT) {
+                self.registers.events_error.write(EVENT::EVENT::CLEAR);
+                let errorsrc = self.registers.errorsrc_master.extract();
+                self.registers
+                    .errorsrc_master
+                    .write(ERRORSRC::ANACK::ErrorDidNotOccur + ERRORSRC::DNACK::ErrorDidNotOccur);
+                self.client.map(|client| match self.buf.take() {
+                    None => (),
+                    Some(buf) => {
+                        let status = if errorsrc.is_set(ERRORSRC::ANACK) {
+                            Err(hil::i2c::Error::AddressNak)
+                        } else if errorsrc.is_set(ERRORSRC::DNACK) {
+                            Err(hil::i2c::Error::DataNak)
+                        } else {
+                            Ok(())
+                        };
+                        self.clear_events();
+                        client.command_complete(buf, status);
+                    }
+                });
+            }
+        } else {
+            self.registers.events_stopped.write(EVENT::EVENT::CLEAR);
+
+            // If RX started (master started write) and we don't have a buffer then report
+            // write_expected()
+            if self.registers.events_rxstarted.is_set(EVENT::EVENT) {
+                self.registers.events_rxstarted.write(EVENT::EVENT::CLEAR);
+                self.slave_client.map(|client| {
+                    if self.buf.is_none() {
+                        client.write_expected();
+                    }
+                });
+            }
+
+            // If TX started (master started read) and we don't have a buffer then report
+            // read_expected()
+            if self.registers.events_txstarted.is_set(EVENT::EVENT) {
+                self.registers.events_txstarted.write(EVENT::EVENT::CLEAR);
+                self.slave_client.map(|client| {
+                    if self.slave_read_buf.is_none() {
+                        client.read_expected();
+                    }
+                });
+            }
+
+            // Write command received
+            if self.registers.events_write.is_set(EVENT::EVENT) {
+                self.registers.events_write.write(EVENT::EVENT::CLEAR);
+                let length = self.registers.rxd_amount.read(AMOUNT::AMOUNT) as usize;
+                self.slave_client.map(|client| match self.buf.take() {
+                    None => (),
+                    Some(buf) => {
+                        self.clear_events();
+                        client.command_complete(
+                            buf,
+                            length,
+                            hil::i2c::SlaveTransmissionType::Write,
+                        );
+                    }
+                });
+            }
+
+            if self.registers.events_read.is_set(EVENT::EVENT) {
+                self.registers.events_read.write(EVENT::EVENT::CLEAR);
+                let length = self.registers.txd_amount.read(AMOUNT::AMOUNT) as usize;
+                self.slave_client
+                    .map(|client| match self.slave_read_buf.take() {
+                        None => (),
+                        Some(buf) => {
+                            self.clear_events();
+                            client.command_complete(
+                                buf,
+                                length,
+                                hil::i2c::SlaveTransmissionType::Read,
+                            );
+                        }
                     });
-                }
-                _ => panic!("i2c status error"),
             }
         }
 
-        if self.registers.isr.is_set(ISR::NACKF) {
-            // abort transfer due to NACK
-            self.registers.cr2.modify(CR2::STOP::SET);
-            self.stop();
-            self.registers.icr.modify(ICR::NACKCF::SET);
-            self.master_client.map(|client| {
-                self.buffer
-                    .take()
-                    .map(|buf| client.command_complete(buf, Err(Error::AddressNak)))
-            });
-        }
+        // We can blindly clear the following events since we're not using them.
+        self.registers.events_suspended.write(EVENT::EVENT::CLEAR);
+        self.registers.events_lastrx.write(EVENT::EVENT::CLEAR);
+        self.registers.events_lasttx.write(EVENT::EVENT::CLEAR);
     }
 
-    pub fn handle_error(&self) {
-        // not sure that this is the best error to send
-        self.master_client.map(|client| {
-            self.buffer
-                .take()
-                .map(|buf| client.command_complete(buf, Err(Error::DataNak)))
-        });
-        self.stop();
+    pub fn is_enabled(&self) -> bool {
+        self.is_master_enabled() || self.is_slave_enabled()
     }
 
-    fn reset(&self) {
-        self.disable();
-        self.enable();
+    fn is_master_enabled(&self) -> bool {
+        self.registers
+            .enable
+            .matches_all(ENABLE::ENABLE::EnableMaster)
     }
 
-    fn start_write(&self) {
-        self.tx_position.set(0);
+    fn is_slave_enabled(&self) -> bool {
         self.registers
-            .cr2
-            .modify(CR2::NBYTES.val(self.tx_len.get() as u32));
-        self.registers
-            .cr2
-            .modify(CR2::SADD7_1.val(self.slave_address.get() as u32));
-        self.registers.cr2.modify(CR2::RD_WRN::CLEAR);
-        self.registers
-            .cr1
-            .modify(CR1::TXIE::SET + CR1::ERRIE::SET + CR1::NACKIE::SET + CR1::TCIE::SET);
-        self.registers.cr2.modify(CR2::START::SET);
-    }
-
-    fn stop(&self) {
-        self.registers.cr1.modify(
-            CR1::TXIE::CLEAR
-                + CR1::ERRIE::CLEAR
-                + CR1::NACKIE::CLEAR
-                + CR1::TCIE::CLEAR
-                + CR1::STOPIE::CLEAR
-                + CR1::RXIE::CLEAR,
-        );
-        self.status.set(I2CStatus::Idle);
-    }
-
-    fn start_read(&self) {
-        self.rx_position.set(0);
-        self.registers
-            .cr2
-            .modify(CR2::NBYTES.val(self.rx_len.get() as u32));
-        self.registers
-            .cr2
-            .modify(CR2::SADD7_1.val(self.slave_address.get() as u32));
-        self.registers.cr2.modify(CR2::AUTOEND::CLEAR);
-        self.registers.cr2.modify(CR2::RD_WRN::SET);
-        self.registers
-            .cr1
-            .modify(CR1::ERRIE::SET + CR1::NACKIE::SET + CR1::TCIE::SET + CR1::RXIE::SET);
-        self.registers.cr2.modify(CR2::START::SET);
+            .enable
+            .matches_all(ENABLE::ENABLE::EnableSlave)
     }
 }
 
-impl<'a> i2c::I2CMaster<'a> for I2C<'a> {
-    fn set_master_client(&self, master_client: &'a dyn I2CHwMasterClient) {
-        self.master_client.replace(master_client);
+impl<'a> hil::i2c::I2CMaster<'a> for TWI<'a> {
+    fn set_master_client(&self, client: &'a dyn hil::i2c::I2CHwMasterClient) {
+        self.client.set(client);
     }
+
     fn enable(&self) {
-        self.registers.cr1.modify(CR1::PE::SET);
+        self.enable_master();
     }
+
     fn disable(&self) {
-        self.registers.cr1.modify(CR1::PE::CLEAR);
+        self.disable();
     }
+
     fn write_read(
         &self,
         addr: u8,
         data: &'static mut [u8],
         write_len: usize,
         read_len: usize,
-    ) -> Result<(), (Error, &'static mut [u8])> {
-        if self.status.get() == I2CStatus::Idle {
-            self.reset();
-            self.status.set(I2CStatus::WritingReading);
-            self.slave_address.set(addr);
-            self.buffer.replace(data);
-            self.tx_len.set(write_len);
-            self.rx_len.set(read_len);
-            self.registers.cr2.modify(CR2::AUTOEND::CLEAR);
-            self.start_write();
-            Ok(())
-        } else {
-            Err((Error::Busy, data))
-        }
+    ) -> Result<(), (hil::i2c::Error, &'static mut [u8])> {
+        self.registers
+            .address_0
+            .write(ADDRESS::ADDRESS.val(addr as u32));
+        self.registers.txd_ptr.set(data.as_mut_ptr() as u32);
+        self.registers
+            .txd_maxcnt
+            .write(MAXCNT::MAXCNT.val(write_len as u32));
+        self.registers.rxd_ptr.set(data.as_mut_ptr() as u32);
+        self.registers
+            .rxd_maxcnt
+            .write(MAXCNT::MAXCNT.val(read_len as u32));
+        // Use the NRF52 shortcut register to configure the peripheral to
+        // switch to RX after TX is complete, and then to switch to the STOP
+        // state once RX is done. This avoids us having to juggle tasks in
+        // the interrupt handler.
+        self.registers
+            .shorts
+            .write(SHORTS::LASTTX_STARTRX::EnableShortcut + SHORTS::LASTRX_STOP::EnableShortcut);
+        self.registers
+            .intenset
+            .write(INTE::STOPPED::Enable + INTE::ERROR::Enable);
+        // start the transfer
+        self.registers.tasks_starttx.write(TASK::TASK::SET);
+        self.buf.replace(data);
+        Ok(())
     }
+
     fn write(
         &self,
         addr: u8,
         data: &'static mut [u8],
         len: usize,
-    ) -> Result<(), (Error, &'static mut [u8])> {
-        if self.status.get() == I2CStatus::Idle {
-            self.reset();
-            self.status.set(I2CStatus::Writing);
-            self.slave_address.set(addr);
-            self.buffer.replace(data);
-            self.tx_len.set(len);
-            self.registers.cr2.modify(CR2::AUTOEND::CLEAR);
-            self.start_write();
-            Ok(())
-        } else {
-            Err((Error::Busy, data))
-        }
+    ) -> Result<(), (hil::i2c::Error, &'static mut [u8])> {
+        self.registers
+            .address_0
+            .write(ADDRESS::ADDRESS.val(addr as u32));
+        self.registers.txd_ptr.set(data.as_mut_ptr() as u32);
+        self.registers
+            .txd_maxcnt
+            .write(MAXCNT::MAXCNT.val(len as u32));
+        // Use the NRF52 shortcut register to switch to the STOP state once
+        // the TX is complete.
+        self.registers
+            .shorts
+            .write(SHORTS::LASTTX_STOP::EnableShortcut);
+        self.registers
+            .intenset
+            .write(INTE::STOPPED::Enable + INTE::ERROR::Enable);
+        // start the transfer
+        self.registers.tasks_starttx.write(TASK::TASK::SET);
+        self.buf.replace(data);
+        Ok(())
     }
+
     fn read(
         &self,
         addr: u8,
         buffer: &'static mut [u8],
         len: usize,
-    ) -> Result<(), (Error, &'static mut [u8])> {
-        if self.status.get() == I2CStatus::Idle {
-            self.reset();
-            self.status.set(I2CStatus::Reading);
-            self.slave_address.set(addr);
-            self.buffer.replace(buffer);
-            self.rx_len.set(len);
-            self.registers.cr2.modify(CR2::AUTOEND::CLEAR);
-            self.start_read();
-            Ok(())
-        } else {
-            Err((Error::Busy, buffer))
-        }
+    ) -> Result<(), (hil::i2c::Error, &'static mut [u8])> {
+        self.registers
+            .address_0
+            .write(ADDRESS::ADDRESS.val(addr as u32));
+        self.registers.rxd_ptr.set(buffer.as_mut_ptr() as u32);
+        self.registers
+            .rxd_maxcnt
+            .write(MAXCNT::MAXCNT.val(len as u32));
+        // Use the NRF52 shortcut register to switch to the STOP state once
+        // the RX is complete.
+        self.registers
+            .shorts
+            .write(SHORTS::LASTRX_STOP::EnableShortcut);
+        self.registers
+            .intenset
+            .write(INTE::STOPPED::Enable + INTE::ERROR::Enable);
+        // start the transfer
+        self.registers.tasks_startrx.write(TASK::TASK::SET);
+        self.buf.replace(buffer);
+        Ok(())
     }
 }
 
-struct I2CClock<'a>(rcc::PeripheralClock<'a>);
-
-impl ClockInterface for I2CClock<'_> {
-    fn is_enabled(&self) -> bool {
-        self.0.is_enabled()
+impl<'a> hil::i2c::I2CSlave<'a> for TWI<'a> {
+    fn set_slave_client(&self, client: &'a dyn hil::i2c::I2CHwSlaveClient) {
+        self.slave_client.set(client);
     }
 
     fn enable(&self) {
-        self.0.enable();
+        self.enable_slave();
     }
 
     fn disable(&self) {
-        self.0.disable();
+        self.disable();
+    }
+
+    fn set_address(&self, addr: u8) -> Result<(), hil::i2c::Error> {
+        self.registers
+            .address_0
+            .write(ADDRESS::ADDRESS.val(addr as u32));
+        self.registers.config.modify(CONFIG::ADDRESS0::Enable);
+        Ok(())
+    }
+
+    fn write_receive(
+        &self,
+        data: &'static mut [u8],
+        max_len: usize,
+    ) -> Result<(), (hil::i2c::Error, &'static mut [u8])> {
+        self.registers.rxd_ptr.set(data.as_mut_ptr() as u32);
+        self.registers
+            .rxd_maxcnt
+            .write(MAXCNT::MAXCNT.val(max_len as u32));
+
+        self.registers
+            .intenset
+            .modify(INTE::STOPPED::Enable + INTE::ERROR::Enable);
+
+        self.buf.replace(data);
+
+        self.registers.tasks_preparerx.write(TASK::TASK::SET);
+
+        Ok(())
+    }
+
+    fn read_send(
+        &self,
+        data: &'static mut [u8],
+        max_len: usize,
+    ) -> Result<(), (hil::i2c::Error, &'static mut [u8])> {
+        self.registers.txd_ptr.set(data.as_mut_ptr() as u32);
+        self.registers
+            .txd_maxcnt
+            .write(MAXCNT::MAXCNT.val(max_len as u32));
+
+        self.registers
+            .intenset
+            .modify(INTE::STOPPED::Enable + INTE::ERROR::Enable + INTE::READ::Enable);
+
+        self.slave_read_buf.replace(data);
+
+        self.registers.tasks_preparetx.write(TASK::TASK::SET);
+
+        Ok(())
+    }
+
+    fn listen(&self) {
+        self.registers.tasks_preparerx.write(TASK::TASK::SET);
     }
 }
+
+impl<'a> hil::i2c::I2CMasterSlave<'a> for TWI<'a> {}
+
+// The SPI0_TWI0 and SPI1_TWI1 interrupts are dispatched to the
+// correct handler by the service_pending_interrupts() routine in
+// chip.rs based on which peripheral is enabled.
+
+register_structs! {
+    pub TwiRegisters {
+        /// Start TWI receive sequence
+        (0x00 => tasks_startrx: WriteOnly<u32, TASK::Register>),
+        (0x04 => _reserved0),
+        /// Start TWI transmit sequence
+        (0x08 => tasks_starttx: WriteOnly<u32, TASK::Register>),
+        (0x0C => _reserved1),
+        /// Stop TWI transaction
+        (0x14 => tasks_stop: WriteOnly<u32, TASK::Register>),
+        (0x18 => _reserved2),
+        /// Suspend TWI transaction
+        (0x1C => tasks_suspend: WriteOnly<u32, TASK::Register>),
+        /// Resume TWI transaction
+        (0x20 => tasks_resume: WriteOnly<u32, TASK::Register>),
+        (0x24 => _reserved3),
+        (0x30 => tasks_preparerx: WriteOnly<u32, TASK::Register>),
+        (0x34 => tasks_preparetx: WriteOnly<u32, TASK::Register>),
+        (0x38 => _reserved4),
+        /// TWI stopped
+        (0x104 => events_stopped: ReadWrite<u32, EVENT::Register>),
+        (0x108 => _reserved5),
+        /// TWI error
+        (0x124 => events_error: ReadWrite<u32, EVENT::Register>),
+        (0x128 => _reserved6),
+        /// Last byte has been sent out after the SUSPEND task has been issued, TWI
+        /// traffic is now suspended.
+        (0x148 => events_suspended: ReadWrite<u32, EVENT::Register>),
+        /// Receive sequence started
+        (0x14C => events_rxstarted: ReadWrite<u32, EVENT::Register>),
+        /// Transmit sequence started
+        (0x150 => events_txstarted: ReadWrite<u32, EVENT::Register>),
+        (0x154 => _reserved7),
+        /// Byte boundary, starting to receive the last byte
+        (0x15C => events_lastrx: ReadWrite<u32, EVENT::Register>),
+        /// Byte boundary, starting to transmit the last byte
+        (0x160 => events_lasttx: ReadWrite<u32, EVENT::Register>),
+        (0x164 => events_write: ReadWrite<u32, EVENT::Register>),
+        (0x168 => events_read: ReadWrite<u32, EVENT::Register>),
+        (0x16C => _reserved8),
+        /// Shortcut register
+        (0x200 => shorts: ReadWrite<u32, SHORTS::Register>),
+        (0x204 => _reserved9),
+        /// Enable or disable interrupt
+        (0x300 => inten: ReadWrite<u32, INTE::Register>),
+        /// Enable interrupt
+        (0x304 => intenset: ReadWrite<u32, INTE::Register>),
+        /// Disable interrupt
+        (0x308 => intenclr: ReadWrite<u32, INTE::Register>),
+        (0x30C => _reserved10),
+        /// Error source
+        (0x4C4 => errorsrc_master: ReadWrite<u32, ERRORSRC::Register>),
+        (0x4C8 => _reserved11),
+        (0x4D0 => errorsrc_slave: ReadWrite<u32, ERRORSRC::Register>),
+        (0x4D4 => match_reg: ReadWrite<u32>),
+        (0x4D8 => _reserved12),
+        /// Enable TWI
+        (0x500 => enable: ReadWrite<u32, ENABLE::Register>),
+        (0x504 => _reserved13),
+        /// Pin select for SCL signal
+        (0x508 => psel_scl: VolatileCell<Pinmux>),
+        /// Pin select for SDA signal
+        (0x50C => psel_sda: VolatileCell<Pinmux>),
+        (0x510 => _reserved_14),
+        /// TWI frequency
+        (0x524 => frequency: ReadWrite<u32>),
+        (0x528 => _reserved15),
+        /// Data pointer
+        (0x534 => rxd_ptr: ReadWrite<u32>),
+        /// Maximum number of bytes in receive buffer
+        (0x538 => rxd_maxcnt: ReadWrite<u32, MAXCNT::Register>),
+        /// Number of bytes transferred in the last transaction
+        (0x53C => rxd_amount: ReadWrite<u32, AMOUNT::Register>),
+        /// EasyDMA list type
+        (0x540 => rxd_list: ReadWrite<u32>),
+        /// Data pointer
+        (0x544 => txd_ptr: ReadWrite<u32>),
+        /// Maximum number of bytes in transmit buffer
+        (0x548 => txd_maxcnt: ReadWrite<u32, MAXCNT::Register>),
+        /// Number of bytes transferred in the last transaction
+        (0x54C => txd_amount: ReadWrite<u32, AMOUNT::Register>),
+        /// EasyDMA list type
+        (0x550 => txd_list: ReadWrite<u32>),
+        (0x554 => _reserved_16),
+        /// Address used in the TWI transfer
+        (0x588 => address_0: ReadWrite<u32, ADDRESS::Register>),
+        (0x58C => address_1: ReadWrite<u32, ADDRESS::Register>),
+        (0x590 => _reserved_17),
+        (0x594 => config: ReadWrite<u32, CONFIG::Register>),
+        (0x598 => _reserved_18),
+        (0x5C0 => orc: ReadWrite<u32>),
+        (0x5C4 => @END),
+    }
+}
+
+register_bitfields![u32,
+    SHORTS [
+        /// Shortcut between EVENTS_LASTTX event and TASKS_STARTRX task
+        LASTTX_STARTRX OFFSET(7) NUMBITS(1) [
+            /// Disable shortcut
+            DisableShortcut = 0,
+            /// Enable shortcut
+            EnableShortcut = 1
+        ],
+        /// Shortcut between EVENTS_LASTTX event and TASKS_SUSPEND task
+        LASTTX_SUSPEND OFFSET(8) NUMBITS(1) [
+            /// Disable shortcut
+            DisableShortcut = 0,
+            /// Enable shortcut
+            EnableShortcut = 1
+        ],
+        /// Shortcut between EVENTS_LASTTX event and TASKS_STOP task
+        LASTTX_STOP OFFSET(9) NUMBITS(1) [
+            /// Disable shortcut
+            DisableShortcut = 0,
+            /// Enable shortcut
+            EnableShortcut = 1
+        ],
+        /// Shortcut between EVENTS_LASTRX event and TASKS_STARTTX task
+        LASTRX_STARTTX OFFSET(10) NUMBITS(1) [
+            /// Disable shortcut
+            DisableShortcut = 0,
+            /// Enable shortcut
+            EnableShortcut = 1
+        ],
+        /// Shortcut between EVENTS_LASTRX event and TASKS_STOP task
+        LASTRX_STOP OFFSET(12) NUMBITS(1) [
+            /// Disable shortcut
+            DisableShortcut = 0,
+            /// Enable shortcut
+            EnableShortcut = 1
+        ]
+    ],
+    INTE [
+        /// Enable or disable interrupt on EVENTS_STOPPED event
+        STOPPED OFFSET(1) NUMBITS(1) [
+            /// Disable
+            Disable = 0,
+            /// Enable
+            Enable = 1
+        ],
+        /// Enable or disable interrupt on EVENTS_ERROR event
+        ERROR OFFSET(9) NUMBITS(1) [
+            /// Disable
+            Disable = 0,
+            /// Enable
+            Enable = 1
+        ],
+        /// Enable or disable interrupt on EVENTS_RXSTARTED event
+        RXSTARTED OFFSET(19) NUMBITS(1) [
+            /// Disable
+            Disable = 0,
+            /// Enable
+            Enable = 1
+        ],
+        /// Enable or disable interrupt on EVENTS_TXSTARTED event
+        TXSTARTED OFFSET(20) NUMBITS(1) [
+            /// Disable
+            Disable = 0,
+            /// Enable
+            Enable = 1
+        ],
+        /// Enable or disable interrupt on EVENTS_LASTRX event
+        LASTRX OFFSET(23) NUMBITS(1) [
+            /// Disable
+            Disable = 0,
+            /// Enable
+            Enable = 1
+        ],
+        /// Enable or disable interrupt on EVENTS_LASTTX event
+        LASTTX OFFSET(24) NUMBITS(1) [
+            /// Disable
+            Disable = 0,
+            /// Enable
+            Enable = 1
+        ],
+        WRITE OFFSET(25) NUMBITS(1) [
+            Disable = 0,
+            Enable = 1
+        ],
+        READ OFFSET(26) NUMBITS(1) [
+            Disable = 0,
+            Enable = 1
+        ],
+    ],
+    ERRORSRC [
+        /// NACK received after sending the address (write '1' to clear)
+        ANACK OFFSET(1) NUMBITS(1) [
+            /// Error did not occur
+            ErrorDidNotOccur = 0,
+            /// Error occurred
+            ErrorOccurred = 1
+        ],
+        /// NACK received after sending a data byte (write '1' to clear)
+        DNACK OFFSET(2) NUMBITS(1) [
+            /// Error did not occur
+            ErrorDidNotOccur = 0,
+            /// Error occurred
+            ErrorOccurred = 1
+        ]
+    ],
+    EVENT [
+        EVENT 0
+    ],
+    TASK [
+        TASK 0
+    ],
+    ENABLE [
+        /// Enable or disable TWI
+        ENABLE OFFSET(0) NUMBITS(4) [
+            Disable = 0,
+            EnableMaster = 6,
+            EnableSlave = 9,
+        ]
+    ],
+    MAXCNT [
+        /// Maximum number of bytes in buffer
+        MAXCNT OFFSET(0) NUMBITS(16)
+    ],
+    AMOUNT [
+        AMOUNT OFFSET(0) NUMBITS(16),
+    ],
+    ADDRESS [
+        /// Address used in the TWI transfer
+        ADDRESS OFFSET(0) NUMBITS(7)
+    ],
+    CONFIG [
+        /// Address used in the TWI transfer
+        ADDRESS0 OFFSET(0) NUMBITS(1) [
+            Disable = 0,
+            Enable = 1,
+        ],
+        ADDRESS1 OFFSET(1) NUMBITS(1) [
+            Disable = 0,
+            Enable = 1,
+        ]
+    ],
+];

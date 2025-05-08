@@ -2,17 +2,15 @@
 /* SPDX-License-Identifier: Apache-2.0 OR MIT                         */
 /* Copyright Tock Contributors 2023.                                  */
 
-/* Memory layout for the STM32F303VCT6
- * rom = 256KB (LENGTH = 0x00040000)
- * kernel = 128KB
- * user = 128KB
- * ram = 40KB */
+/* Memory layout for the NPCM400F
+ * rom = 256KB (LENGTH = 0x00200000)
+ * ram = 764KB */
 
 MEMORY
 {
-  rom (rx)  : ORIGIN = 0x08000000, LENGTH = 128K
-  prog (rx) : ORIGIN = 0x08020000, LENGTH = 128K
-  ram (rwx) : ORIGIN = 0x20000000, LENGTH = 40K
+  rom (rx)  : ORIGIN = 0x00080000, LENGTH = 256K
+  prog (rx) : ORIGIN = 0x00180000, LENGTH = 100K
+  ram (rwx) : ORIGIN = 0x10008000, LENGTH = 764K
 }
 
 PAGE_SIZE = 2K;

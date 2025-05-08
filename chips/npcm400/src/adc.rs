@@ -2,696 +2,609 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 // Copyright Tock Contributors 2022.
 
-//! Analog to Digital Converter Peripheral
+//! ADC driver for the nRF52. Uses the SAADC peripheral.
 
-use crate::rcc;
 use core::cell::Cell;
+use core::cmp;
+use core::ptr::addr_of;
 use kernel::hil;
-use kernel::platform::chip::ClockInterface;
-use kernel::utilities::cells::OptionalCell;
-use kernel::utilities::registers::interfaces::{ReadWriteable, Readable};
-use kernel::utilities::registers::{register_bitfields, ReadOnly, ReadWrite};
+use kernel::utilities::cells::{OptionalCell, TakeCell, VolatileCell};
+use kernel::utilities::registers::interfaces::{Readable, Writeable};
+use kernel::utilities::registers::{register_bitfields, ReadOnly, ReadWrite, WriteOnly};
 use kernel::utilities::StaticRef;
 use kernel::ErrorCode;
 
 #[repr(C)]
 struct AdcRegisters {
-    isr: ReadWrite<u32, ISR::Register>,
-    ier: ReadWrite<u32, IER::Register>,
-    cr: ReadWrite<u32, CR::Register>,
-    cfgr: ReadWrite<u32, CFGR::Register>,
-
-    _reserved0: [u32; 1],
-    smpr1: ReadWrite<u32, SMPR1::Register>,
-    smpr2: ReadWrite<u32, SMPR2::Register>,
-
-    _reserved1: [u32; 1],
-    tr1: ReadWrite<u32, TR1::Register>,
-    tr2: ReadWrite<u32, TR2::Register>,
-    tr3: ReadWrite<u32, TR3::Register>,
-
-    _reserved2: [u32; 1],
-    sqr1: ReadWrite<u32, SQR1::Register>,
-    sqr2: ReadWrite<u32, SQR2::Register>,
-    sqr3: ReadWrite<u32, SQR3::Register>,
-    sqr4: ReadWrite<u32, SQR4::Register>,
-    dr: ReadOnly<u32, DR::Register>,
-    _reserved3: [u32; 2],
-
-    jsqr: ReadWrite<u32, JSQR::Register>,
-    _reserved4: [u32; 4],
-
-    ofr1: ReadWrite<u32, OFR::Register>,
-    ofr2: ReadWrite<u32, OFR::Register>,
-    ofr3: ReadWrite<u32, OFR::Register>,
-    ofr4: ReadWrite<u32, OFR::Register>,
-    _reserved5: [u32; 4],
-
-    jdr1: ReadOnly<u32, JDR::Register>,
-    jdr2: ReadOnly<u32, JDR::Register>,
-    jdr3: ReadOnly<u32, JDR::Register>,
-    jdr4: ReadOnly<u32, JDR::Register>,
-    _reserved6: [u32; 4],
-
-    awd2cr: ReadWrite<u32, AWD2CR::Register>,
-    awd3cr: ReadWrite<u32, AWD3CR::Register>,
-    _reserved7: [u32; 2],
-
-    difsel: ReadWrite<u32, DIFSEL::Register>,
-    calfact: ReadWrite<u32, CALFACT::Register>,
+    /// Start the ADC and prepare the result buffer in RAM
+    tasks_start: WriteOnly<u32, TASK::Register>,
+    /// Take one ADC sample, if scan is enabled all channels are sampled
+    tasks_sample: WriteOnly<u32, TASK::Register>,
+    /// Stop the ADC and terminate any on-going conversion
+    tasks_stop: WriteOnly<u32, TASK::Register>,
+    /// Starts offset auto-calibration
+    tasks_calibrateoffset: WriteOnly<u32, TASK::Register>,
+    _reserved0: [u8; 240],
+    /// The ADC has started
+    events_started: ReadWrite<u32, EVENT::Register>,
+    /// The ADC has filled up the Result buffer
+    events_end: ReadWrite<u32, EVENT::Register>,
+    /// A conversion task has been completed. Depending on the mode, multiple conversion
+    events_done: ReadWrite<u32, EVENT::Register>,
+    /// A result is ready to get transferred to RAM
+    events_resultdone: ReadWrite<u32, EVENT::Register>,
+    /// Calibration is complete
+    events_calibratedone: ReadWrite<u32, EVENT::Register>,
+    /// The ADC has stopped
+    events_stopped: ReadWrite<u32, EVENT::Register>,
+    /// Last result is equal or above `CH[X].LIMIT`
+    events_ch: [AdcEventChRegisters; 8],
+    _reserved1: [u8; 424],
+    /// Enable or disable interrupt
+    inten: ReadWrite<u32, INTEN::Register>,
+    /// Enable interrupt
+    intenset: ReadWrite<u32, INTEN::Register>,
+    /// Disable interrupt
+    intenclr: ReadWrite<u32, INTEN::Register>,
+    _reserved2: [u8; 244],
+    /// Status
+    status: ReadOnly<u32>,
+    _reserved3: [u8; 252],
+    /// Enable or disable ADC
+    enable: ReadWrite<u32, ENABLE::Register>,
+    _reserved4: [u8; 12],
+    ch: [AdcChRegisters; 8],
+    _reserved5: [u8; 96],
+    /// Resolution configuration
+    resolution: ReadWrite<u32, RESOLUTION::Register>,
+    /// Oversampling configuration. OVERSAMPLE should not be combined with SCAN. The RES
+    oversample: ReadWrite<u32>,
+    /// Controls normal or continuous sample rate
+    samplerate: ReadWrite<u32, SAMPLERATE::Register>,
+    _reserved6: [u8; 48],
+    /// Pointer to store samples to
+    result_ptr: VolatileCell<*const u16>,
+    /// Number of 16 bit samples to save in RAM
+    result_maxcnt: ReadWrite<u32, RESULT_MAXCNT::Register>,
+    /// Number of 16 bit samples recorded to RAM
+    result_amount: ReadWrite<u32, RESULT_AMOUNT::Register>,
 }
 
 #[repr(C)]
-struct AdcCommonRegisters {
-    csr: ReadOnly<u32, CSR::Register>,
-    _reserved0: [u32; 1],
+struct AdcEventChRegisters {
+    limith: ReadWrite<u32, EVENT::Register>,
+    limitl: ReadWrite<u32, EVENT::Register>,
+}
 
-    ccr: ReadWrite<u32, CCR::Register>,
-    cdr: ReadOnly<u32, CDR::Register>,
+#[repr(C)]
+struct AdcChRegisters {
+    pselp: ReadWrite<u32, PSEL::Register>,
+    pseln: ReadWrite<u32, PSEL::Register>,
+    config: ReadWrite<u32, CONFIG::Register>,
+    limit: ReadWrite<u32, LIMIT::Register>,
 }
 
 register_bitfields![u32,
-    ///interrupt and status register
-    ISR [
-        /// Injected context queue overflow
-        JQOVF OFFSET(10) NUMBITS(1) [],
-        /// Analog watchdog 3 flag
-        AWD3 OFFSET(9) NUMBITS(1) [],
-        /// Analog watchdog 2 flag
-        AWD2 OFFSET(8) NUMBITS(1) [],
-        /// Analog watchdog 1 flag
-        AWD1 OFFSET(7) NUMBITS(1) [],
-        /// Injected channel end of sequence flag
-        JEOS OFFSET(6) NUMBITS(1) [],
-        /// Injected channel end of conversion flag
-        JEOC OFFSET(5) NUMBITS(1) [],
-        /// ADC overrun
-        OVR OFFSET(4) NUMBITS(1) [],
-        /// End of regular sequence flag
-        EOS OFFSET(3) NUMBITS(1) [],
-        /// End of conversion flag
-        EOC OFFSET(2) NUMBITS(1) [],
-        /// End of sampling flag
-        EOSMP OFFSET(1) NUMBITS(1) [],
-        /// ADC ready
-        ADRDY OFFSET(0) NUMBITS(1) []
+    INTEN [
+        /// Enable or disable interrupt on EVENTS_STARTED event
+        STARTED 0,
+        /// Enable or disable interrupt on EVENTS_END event
+        END 1,
+        /// Enable or disable interrupt on EVENTS_DONE event
+        DONE 2,
+        /// Enable or disable interrupt on EVENTS_RESULTDONE event
+        RESULTDONE 3,
+        /// Enable or disable interrupt on EVENTS_CALIBRATEDONE event
+        CALIBRATEDONE 4,
+        /// Enable or disable interrupt on EVENTS_STOPPED event
+        STOPPED 5,
+        /// Enable or disable interrupt on EVENTS_CH[0].LIMITH event
+        CH0LIMITH 6,
+        /// Enable or disable interrupt on EVENTS_CH[0].LIMITL event
+        CH0LIMITL 7,
+        /// Enable or disable interrupt on EVENTS_CH[1].LIMITH event
+        CH1LIMITH 8,
+        /// Enable or disable interrupt on EVENTS_CH[1].LIMITL event
+        CH1LIMITL 9,
+        /// Enable or disable interrupt on EVENTS_CH[2].LIMITH event
+        CH2LIMITH 10,
+        /// Enable or disable interrupt on EVENTS_CH[2].LIMITL event
+        CH2LIMITL 11,
+        /// Enable or disable interrupt on EVENTS_CH[3].LIMITH event
+        CH3LIMITH 12,
+        /// Enable or disable interrupt on EVENTS_CH[3].LIMITL event
+        CH3LIMITL 13,
+        /// Enable or disable interrupt on EVENTS_CH[4].LIMITH event
+        CH4LIMITH 14,
+        /// Enable or disable interrupt on EVENTS_CH[4].LIMITL event
+        CH4LIMITL 15,
+        /// Enable or disable interrupt on EVENTS_CH[5].LIMITH event
+        CH5LIMITH 16,
+        /// Enable or disable interrupt on EVENTS_CH[5].LIMITL event
+        CH5LIMITL 17,
+        /// Enable or disable interrupt on EVENTS_CH[6].LIMITH event
+        CH6LIMITH 18,
+        /// Enable or disable interrupt on EVENTS_CH[6].LIMITL event
+        CH6LIMITL 19,
+        /// Enable or disable interrupt on EVENTS_CH[7].LIMITH event
+        CH7LIMITH 20,
+        /// Enable or disable interrupt on EVENTS_CH[7].LIMITL event
+        CH7LIMITL 21
     ],
-    /// Interrupt enable register
-    IER [
-        /// Injected context queue overflow interrupt enable
-        JQOVFIE OFFSET(10) NUMBITS(1) [],
-        /// Analog watchdog 3 interrupt enable
-        AWD3IE OFFSET(9) NUMBITS(1) [],
-        /// Analog watchdog 2 interrupt enable
-        AWD2IE OFFSET(8) NUMBITS(1) [],
-        /// Analog watchdog 1 interrupt enable
-        AWD1IE OFFSET(7) NUMBITS(1) [],
-        /// End of injected sequence of conversions interrupt enable
-        JEOSIE OFFSET(6) NUMBITS(1) [],
-        /// End of injected conversion interrupt enable
-        JEOCIE OFFSET(5) NUMBITS(1) [],
-        /// Overrun interrupt enable
-        OVRIE OFFSET(4) NUMBITS(1) [],
-        /// End of regular sequence of conversions interrupt enable
-        EOSIE OFFSET(3) NUMBITS(1) [],
-        /// End of regular conversion interrupt enable
-        EOCIE OFFSET(2) NUMBITS(1) [],
-        /// End of sampling flag interrupt enable for regular conversions
-        EOSMPIE OFFSET(1) NUMBITS(1) [],
-        /// ADC ready interrupt enable
-        ADRDYIE OFFSET(0) NUMBITS(1) []
+    ENABLE [
+        ENABLE 0
     ],
-    /// Control register
-    CR [
-        /// ADC calibration
-        ADCAL OFFSET(31) NUMBITS(1) [],
-        /// Differential mode for calibration
-        ADCALDIF OFFSET(30) NUMBITS(1) [],
-        /// ADC voltage regulator enable
-        ADVREGEN OFFSET(28) NUMBITS(2) [],
-        /// ADC stop of injected conversion command
-        JADSTP OFFSET(5) NUMBITS(1) [],
-        /// ADC stop of regular conversion command
-        ADSTP OFFSET(4) NUMBITS(1) [],
-        /// ADC start of injected conversion
-        JADSTART OFFSET(3) NUMBITS(1) [],
-        /// ADC start of regular conversion
-        ADSTART OFFSET(2) NUMBITS(1) [],
-        /// ADC disable command
-        ADDIS OFFSET(1) NUMBITS(1) [],
-        /// ADC enable control
-        ADEN OFFSET(0) NUMBITS(1) []
+    SAMPLERATE [
+        /// Capture and compare value. Sample rate is 16 MHz/CC
+        CC OFFSET(0) NUMBITS(11) [],
+        /// Select mode for sample rate control
+        MODE OFFSET(12) NUMBITS(1) [
+            /// Rate is controlled from SAMPLE task
+            Task = 0,
+            /// Rate is controlled from local timer (use CC to control the rate)
+            Timers = 1
+        ]
     ],
-    /// Configuration register
-    CFGR [
-        /// Analog watchdog 1 channel selection
-        AWD1CH OFFSET(26) NUMBITS(5) [],
-        /// Automatic injected group conversion
-        JAUTO OFFSET(25) NUMBITS(1) [],
-        /// Analog watchdog 1 enable on injected channels
-        JAWD1EN OFFSET(24) NUMBITS(1) [],
-        /// Analog watchdog 1 enable on regular channels
-        AWD1EN OFFSET(23) NUMBITS(1) [],
-        /// Enable the watchdog 1 on a single channel or on all channels
-        AWD1SGL OFFSET(22) NUMBITS(1) [],
-        /// JSQR queue mode
-        JQM OFFSET(21) NUMBITS(1) [],
-        /// Discontinuous mode on injected channels
-        JDISCEN OFFSET(20) NUMBITS(1) [],
-        /// Discontinuous mode channel count
-        DISCNUM OFFSET(17) NUMBITS(3) [],
-        /// Discontinuous mode for regular channels
-        DISCEN OFFSET(16) NUMBITS(1) [],
-        /// Delayed conversion mode
-        AUTDLY OFFSET(14) NUMBITS(1) [],
-        /// Single / continuous conversion mode for regular conversions
-        CONT OFFSET(13) NUMBITS(1) [],
-        /// Overrun Mode
-        OVRMOD OFFSET(12) NUMBITS(1) [],
-        /// External trigger enable and polarity selection for regular channels
-        EXTEN OFFSET(10) NUMBITS(2) [],
-        /// External trigger selection for regular group
-        EXTSEL OFFSET(6) NUMBITS(4) [],
-        /// Data alignment
-        ALIGN OFFSET(5) NUMBITS(1) [],
-        /// Data resolution
-        RES OFFSET(3) NUMBITS(2) [],
-        /// Direct memory access configuration
-        DMACFG OFFSET(1) NUMBITS(1) [],
-        /// Direct memory access enable
-        DMAEN OFFSET(0) NUMBITS(1) []
+    EVENT [
+        EVENT 0
     ],
-    /// Sample time register 1
-    SMPR1 [
-        /// Channel x sampling time selection
-        SMP9 OFFSET(27) NUMBITS(3) [],
-        SMP8 OFFSET(24) NUMBITS(3) [],
-        SMP7 OFFSET(21) NUMBITS(3) [],
-        SMP6 OFFSET(18) NUMBITS(3) [],
-        SMP5 OFFSET(15) NUMBITS(3) [],
-        SMP4 OFFSET(12) NUMBITS(3) [],
-        SMP3 OFFSET(9) NUMBITS(3) [],
-        SMP2 OFFSET(6) NUMBITS(3) [],
-        SMP1 OFFSET(3) NUMBITS(3) []
+    TASK [
+        TASK 0
     ],
-    /// Sample time register 2
-    SMPR2 [
-        /// Channel x sampling time selection
-        SMP18 OFFSET(24) NUMBITS(3) [],
-        SMP17 OFFSET(21) NUMBITS(3) [],
-        SMP16 OFFSET(18) NUMBITS(3) [],
-        SMP15 OFFSET(15) NUMBITS(3) [],
-        SMP14 OFFSET(12) NUMBITS(3) [],
-        SMP13 OFFSET(9) NUMBITS(3) [],
-        SMP12 OFFSET(6) NUMBITS(3) [],
-        SMP11 OFFSET(3) NUMBITS(3) [],
-        SMP10 OFFSET(0) NUMBITS(3) []
+    PSEL [
+        PSEL OFFSET(0) NUMBITS(5) [
+            NotConnected = 0,
+            AnalogInput0 = 1,
+            AnalogInput1 = 2,
+            AnalogInput2 = 3,
+            AnalogInput3 = 4,
+            AnalogInput4 = 5,
+            AnalogInput5 = 6,
+            AnalogInput6 = 7,
+            AnalogInput7 = 8,
+            VDD = 9,
+            VDDHDIV5 = 0xD
+        ]
     ],
-    /// Watchdog threshold register 1
-    TR1 [
-        /// Analog watchdog 1 higher threshold
-        HT1 OFFSET(16) NUMBITS(12) [],
-        /// Analog watchdog 1 lower threshold
-        LT1 OFFSET(0) NUMBITS(12) []
+    CONFIG [
+        RESP OFFSET(0) NUMBITS(2) [
+            Bypass = 0,
+            Pulldown = 1,
+            Pullup = 2,
+            VDD1_2 = 3
+        ],
+        RESN OFFSET(4) NUMBITS(2) [
+            Bypass = 0,
+            Pulldown = 1,
+            Pullup = 2,
+            VDD1_2 = 3
+        ],
+        GAIN OFFSET(8) NUMBITS(3) [
+            Gain1_6 = 0,
+            Gain1_5 = 1,
+            Gain1_4 = 2,
+            Gain1_3 = 3,
+            Gain1_2 = 4,
+            Gain1 = 5,
+            Gain2 = 6,
+            Gain4 = 7
+        ],
+        REFSEL OFFSET(12) NUMBITS(1) [
+            Internal = 0,
+            VDD1_4 = 1
+        ],
+        TACQ OFFSET(16) NUMBITS(3) [
+            us3 = 0,
+            us5 = 1,
+            us10 = 2,
+            us15 = 3,
+            us20 = 4,
+            us40 = 5
+        ],
+        MODE OFFSET(20) NUMBITS(1) [
+            SE = 0,
+            Diff = 1
+        ],
+        BURST OFFSET(24) NUMBITS(1) [
+            Disable = 0,
+            Enable = 1
+        ]
     ],
-    /// Watchdog threshold register 2
-    TR2 [
-        /// Analog watchdog 2 higher threshold
-        HT2 OFFSET(16) NUMBITS(8) [],
-        /// Analog watchdog 2 lower threshold
-        LT2 OFFSET(0) NUMBITS(8) []
+    LIMIT [
+        LOW OFFSET(0) NUMBITS(16) [],
+        HIGH OFFSET(16) NUMBITS(16) []
     ],
-    /// Watchdog threshold register 3
-    TR3 [
-        /// Analog watchdog 3 higher threshold
-        HT3 OFFSET(16) NUMBITS(8) [],
-        /// Analog watchdog 3 lower threshold
-        LT3 OFFSET(0) NUMBITS(8) []
+    RESOLUTION [
+        VAL OFFSET(0) NUMBITS(3) [
+            bit8 = 0,
+            bit10 = 1,
+            bit12 = 2,
+            bit14 = 3
+        ]
     ],
-    /// Regular sequence register 1
-    SQR1 [
-        /// 4th conversion in regular sequence
-        SQ4 OFFSET(24) NUMBITS(5) [],
-        /// 3rd conversion in regular sequence
-        SQ3 OFFSET(18) NUMBITS(5) [],
-        /// 2nd conversion in regular sequence
-        SQ2 OFFSET(12) NUMBITS(5) [],
-        /// 1st conversion in regular sequence
-        SQ1 OFFSET(6) NUMBITS(5) [],
-        /// Regular channel sequence length
-        L OFFSET(0) NUMBITS(4) []
+    RESULT_MAXCNT [
+        MAXCNT OFFSET(0) NUMBITS(16) []
     ],
-    /// Regular sequence register 2
-    SQR2 [
-        SQ9 OFFSET(24) NUMBITS(5) [],
-        /// 9th conversion in regular sequence
-        SQ8 OFFSET(18) NUMBITS(5) [],
-        /// 8th conversion in regular sequence
-        SQ7 OFFSET(12) NUMBITS(5) [],
-        /// 7th conversion in regular sequence
-        SQ6 OFFSET(6) NUMBITS(5) [],
-        /// 6th conversion in regular sequence
-        SQ5 OFFSET(0) NUMBITS(5) []
-    ],
-    /// Regular sequence register 3
-    SQR3 [
-        /// 14th conversion in regular sequence
-        SQ14 OFFSET(24) NUMBITS(5) [],
-        /// 13th conversion in regular sequence
-        SQ13 OFFSET(18) NUMBITS(5) [],
-        /// 12th conversion in regular sequence
-        SQ12 OFFSET(12) NUMBITS(5) [],
-        /// 11th conversion in regular sequence
-        SQ11 OFFSET(6) NUMBITS(5) [],
-        /// 10th conversion in regular sequence
-        SQ10 OFFSET(0) NUMBITS(5) []
-    ],
-    /// Regular sequence register 4
-    SQR4 [
-        /// 16th conversion in regular sequence
-        SQ16 OFFSET(6) NUMBITS(5) [],
-        /// 15th conversion in regular sequence
-        SQ15 OFFSET(0) NUMBITS(5) []
-    ],
-    /// Regular Data Register
-    DR [
-        /// Regular Data converted
-        RDATA OFFSET(0) NUMBITS(16) []
-    ],
-    /// Injected sequence register
-    JSQR [
-        /// 4th conversion in the injected sequence
-        JSQ4 OFFSET(26) NUMBITS(5) [],
-        /// 3rd conversion in the injected sequence
-        JSQ3 OFFSET(20) NUMBITS(5) [],
-        /// 2nd conversion in the injected sequence
-        JSQ2 OFFSET(14) NUMBITS(5) [],
-        /// 1st conversion in the injected sequence
-        JSQ1 OFFSET(8) NUMBITS(5) [],
-        /// External Trigger Enable and Polarity Selection for injected channels
-        JEXTEN OFFSET(6) NUMBITS(2) [],
-        /// External Trigger Selection for injected group
-        JEXTSEL OFFSET(2) NUMBITS(4) [],
-        /// Injected channel sequence length
-        JL OFFSET(0) NUMBITS(2) []
-    ],
-    /// Offset register
-    OFR [
-        /// Offset y Enable
-        OFFSET_EN OFFSET(31) NUMBITS(1) [],
-        /// Channel selection for the Data offset y
-        OFFSET_CH OFFSET(26) NUMBITS(5) [],
-        /// Data offset y for the channel programmed into bits OFFSET_CH[4:0]
-        OFFSETy OFFSET(0) NUMBITS(12) []
-    ],
-    /// Injected data register
-    JDR [
-        /// Injected data
-        JDATA OFFSET(0) NUMBITS(16) []
-    ],
-    /// Analog Watchdog 2 Configuration Register
-    AWD2CR [
-        /// Analog watchdog 2 channel selection
-        AWD2CH OFFSET(1) NUMBITS(18) []
-    ],
-    /// Analog Watchdog 3 Configuration Register
-    AWD3CR [
-        /// Analog watchdog 3 channel selection
-        AWD3CH OFFSET(1) NUMBITS(18) []
-    ],
-    /// Differential Mode Selection Register
-    DIFSEL [
-        /// Differential mode for channels 18 to 16 r
-        /// Differential mode for channels 15 to 1 r/w
-        DIFSEL OFFSET(1) NUMBITS(18) []
-    ],
-    /// Calibration Factors
-    CALFACT [
-        /// Calibration Factors in differential mode
-        CALFACT_D OFFSET(16) NUMBITS(7) [],
-        /// Calibration Factors In Single-Ended mode
-        CALFACT_S OFFSET(0) NUMBITS(7) []
-    ],
-    /// Common status register
-    CSR [
-        /// Injected Context Queue Overflow flag of the slave ADC
-        JQOVF_SLV OFFSET(26) NUMBITS(1) [],
-        /// Analog watchdog 3 flag of the slave ADC
-        AWD3_SLV OFFSET(25) NUMBITS(1) [],
-        /// Analog watchdog 2 flag of the slave ADC
-        AWD2_SLV OFFSET(24) NUMBITS(1) [],
-        /// Analog watchdog 1 flag of the slave ADC
-        AWD1_SLV OFFSET(23) NUMBITS(1) [],
-        /// End of injected sequence flag of the slave ADC
-        JEOS_SLV OFFSET(22) NUMBITS(1) [],
-        /// End of injected conversion flag of the slave ADC
-        JEOC_SLV OFFSET(21) NUMBITS(1) [],
-        /// Overrun flag of the slave ADC
-        OVR_SLV OFFSET(20) NUMBITS(1) [],
-        /// End of regular sequence flag of the slave ADC
-        EOS_SLV OFFSET(19) NUMBITS(1) [],
-        /// End of regular conversion of the slave ADC
-        EOC_SLV OFFSET(18) NUMBITS(1) [],
-        /// End of Sampling phase flag of the slave ADC
-        EOSMP_SLV OFFSET(17) NUMBITS(1) [],
-        /// Slave ADC ready
-        ADRDY_SLV OFFSET(16) NUMBITS(1) [],
-        /// Injected Context Queue Overflow flag of the master ADC
-        JQOVF_MST OFFSET(10) NUMBITS(1) [],
-        /// Analog watchdog 3 flag of the master ADC
-        AWD3_MST OFFSET(9) NUMBITS(1) [],
-        /// Analog watchdog 2 flag of the master ADC
-        AWD2_MST OFFSET(8) NUMBITS(1) [],
-        /// Analog watchdog 1 flag of the master ADC
-        AWD1_MST OFFSET(7) NUMBITS(1) [],
-        /// End of injected sequence flag of the master ADC
-        JEOS_MST OFFSET(6) NUMBITS(1) [],
-        /// End of injected conversion flag of the master ADC
-        JEOC_MST OFFSET(5) NUMBITS(1) [],
-        /// Overrun flag of the master ADC
-        OVR_MST OFFSET(4) NUMBITS(1) [],
-        /// End of regular sequence flag of the master ADC
-        EOS_MST OFFSET(3) NUMBITS(1) [],
-        /// End of regular conversion of the master ADC
-        EOC_MST OFFSET(2) NUMBITS(1) [],
-        /// End of Sampling phase flag of the master ADC
-        EOSMP_MST OFFSET(1) NUMBITS(1) [],
-        /// Master ADC ready
-        ADRDY_MST OFFSET(0) NUMBITS(1) []
-    ],
-    /// Common control register
-    CCR [
-        /// VBAT enable
-        VBATEN OFFSET(24) NUMBITS(1) [],
-        /// Temperature sensor enable
-        TSEN OFFSET(23) NUMBITS(1) [],
-        /// VREFINT enable
-        VREFEN OFFSET(22) NUMBITS(1) [],
-        /// ADC clock mode
-        CKMODE OFFSET(16) NUMBITS(2) [],
-        /// Direct memory access mode for dual ADC mode
-        MDMA OFFSET(14) NUMBITS(2) [],
-        /// DMA configuration (for dual ADC mode)
-        DMACFG OFFSET(13) NUMBITS(1) [],
-        /// Delay between 2 sampling phases
-        DELAY OFFSET(8) NUMBITS(4) [],
-        /// Dual ADC mode selection
-        DUAL OFFSET(0) NUMBITS(5) []
-    ],
-    /// Common regular data register for dual mode
-    CDR [
-        /// Regular data of the slave ADC
-        RDATA_SLV OFFSET(16) NUMBITS(16) [],
-        /// Regular data of the master ADC
-        RDATA_MST OFFSET(0) NUMBITS(16) []
+    RESULT_AMOUNT [
+        AMOUNT OFFSET(0) NUMBITS(16) []
     ]
 ];
 
-const ADC1_BASE: StaticRef<AdcRegisters> =
-    unsafe { StaticRef::new(0x5000_0000 as *const AdcRegisters) };
-
-const ADC12_COMMON_BASE: StaticRef<AdcCommonRegisters> =
-    unsafe { StaticRef::new(0x5000_0300 as *const AdcCommonRegisters) };
-
-#[allow(dead_code)]
-#[repr(u32)]
-#[derive(Copy, Clone, PartialEq)]
-pub enum Channel {
-    Channel0 = 0b00000,
-    Channel1 = 0b00001,
-    Channel2 = 0b00010,
-    Channel3 = 0b00011,
-    Channel4 = 0b00100,
-    Channel5 = 0b00101,
-    Channel6 = 0b00110,
-    Channel7 = 0b00111,
-    Channel8 = 0b01000,
-    Channel9 = 0b01001,
-    Channel10 = 0b01010,
-    Channel11 = 0b01011,
-    Channel12 = 0b01100,
-    Channel13 = 0b01101,
-    Channel14 = 0b01110,
-    Channel15 = 0b01111,
-    Channel16 = 0b10000,
-    Channel17 = 0b10001,
-    Channel18 = 0b10010,
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum AdcChannel {
+    AnalogInput0 = 1,
+    AnalogInput1 = 2,
+    AnalogInput2 = 3,
+    AnalogInput3 = 4,
+    AnalogInput4 = 5,
+    AnalogInput5 = 6,
+    AnalogInput6 = 7,
+    AnalogInput7 = 8,
+    VDD = 9,
+    VDDHDIV5 = 0xD,
 }
 
-#[allow(dead_code)]
-#[repr(u32)]
-enum DiscontinuousMode {
-    OneChannels = 0b000,
-    TwoChannels = 0b001,
-    ThreeChannels = 0b010,
-    FourChannels = 0b011,
-    FiveChannels = 0b100,
-    SixChannels = 0b101,
-    SevenChannels = 0b110,
-    EightChannels = 0b111,
+const SAADC_BASE: StaticRef<AdcRegisters> =
+    unsafe { StaticRef::new(0x40007000 as *const AdcRegisters) };
+
+// Buffer to save completed sample to.
+static mut SAMPLE: [u16; 1] = [0; 1];
+
+#[repr(u8)]
+#[derive(Copy, Clone, Debug)]
+pub enum AdcChannelGain {
+    Gain1_6 = 0,
+    Gain1_5 = 1,
+    Gain1_4 = 2,
+    Gain1_3 = 3,
+    Gain1_2 = 4,
+    Gain1 = 5,
+    Gain2 = 6,
+    Gain4 = 7,
 }
 
-#[allow(dead_code)]
-#[repr(u32)]
-enum ExternalTriggerDetection {
-    Disabled = 0b00,
-    RisingEdge = 0b01,
-    FallingEdge = 0b10,
-    RisingAndFalling = 0b11,
+#[repr(u8)]
+#[derive(Copy, Clone, Debug)]
+pub enum AdcChannelResistor {
+    Bypass = 0,
+    Pulldown = 1,
+    Pullup = 2,
+    VDD1_2 = 3,
 }
 
-#[allow(dead_code)]
-#[repr(u32)]
-enum ExternalTriggerSelection {
-    Event0 = 0b0000,
-    Event1 = 0b0001,
-    Event2 = 0b0010,
-    Event3 = 0b0011,
-    Event4 = 0b0100,
-    Event5 = 0b0101,
-    Event6 = 0b0110,
-    Event7 = 0b0111,
-    Event8 = 0b1000,
-    Event9 = 0b1001,
-    Event10 = 0b1010,
-    Event11 = 0b1011,
-    Event12 = 0b1100,
-    Event13 = 0b1101,
-    Event14 = 0b1110,
-    Event15 = 0b1111,
+#[allow(non_camel_case_types)]
+#[repr(u8)]
+#[derive(Clone, Copy, Debug)]
+pub enum AdcChannelSamplingTime {
+    us3 = 0,
+    us5 = 1,
+    us10 = 2,
+    us15 = 3,
+    us20 = 4,
+    us40 = 5,
 }
 
-#[allow(dead_code)]
-#[repr(u32)]
-enum DataResolution {
-    Bit12 = 0b00,
-    Bit10 = 0b01,
-    Bit8 = 0b10,
-    Bit6 = 0b11,
+#[derive(Copy, Clone, Debug)]
+pub struct AdcChannelSetup {
+    channel: AdcChannel,
+    gain: AdcChannelGain,
+    resp: AdcChannelResistor,
+    resn: AdcChannelResistor,
+    sampling_time: AdcChannelSamplingTime,
 }
 
-#[derive(Copy, Clone, PartialEq)]
-enum ADCStatus {
+impl PartialEq for AdcChannelSetup {
+    fn eq(&self, other: &Self) -> bool {
+        self.channel == other.channel
+    }
+}
+
+impl AdcChannelSetup {
+    pub fn new(channel: AdcChannel) -> AdcChannelSetup {
+        AdcChannelSetup {
+            channel,
+            gain: AdcChannelGain::Gain1_4,
+            resp: AdcChannelResistor::Bypass,
+            resn: AdcChannelResistor::Pulldown,
+            sampling_time: AdcChannelSamplingTime::us10,
+        }
+    }
+
+    pub fn setup(
+        channel: AdcChannel,
+        gain: AdcChannelGain,
+        resp: AdcChannelResistor,
+        resn: AdcChannelResistor,
+        sampling_time: AdcChannelSamplingTime,
+    ) -> AdcChannelSetup {
+        AdcChannelSetup {
+            channel,
+            gain,
+            resp,
+            resn,
+            sampling_time,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum AdcMode {
     Idle,
-    Off,
-    PoweringOn,
-    OneSample,
-    Continuous,
+    Calibrate,
+    Single,
+    HighSpeed,
 }
 
 pub struct Adc<'a> {
     registers: StaticRef<AdcRegisters>,
-    common_registers: StaticRef<AdcCommonRegisters>,
-    clock: AdcClock<'a>,
-    status: Cell<ADCStatus>,
+    reference: Cell<usize>,
+    mode: Cell<AdcMode>,
     client: OptionalCell<&'a dyn hil::adc::Client>,
-    requested: Cell<ADCStatus>,
-    requested_channel: Cell<u32>,
-    sc_enabled: Cell<bool>,
+    highspeed_client: OptionalCell<&'a dyn hil::adc::HighSpeedClient>,
+
+    buffer: TakeCell<'static, [u16]>,
+    length: Cell<usize>,
+    next_buffer: TakeCell<'static, [u16]>,
+    next_length: Cell<usize>,
 }
 
-impl<'a> Adc<'a> {
-    pub const fn new(rcc: &'a rcc::Rcc) -> Self {
+impl Adc<'_> {
+    pub const fn new(voltage_reference_in_mv: usize) -> Self {
         Self {
-            registers: ADC1_BASE,
-            common_registers: ADC12_COMMON_BASE,
-            clock: AdcClock(rcc::PeripheralClock::new(
-                rcc::PeripheralClockType::AHB(rcc::HCLK::ADC1),
-                rcc,
-            )),
-            status: Cell::new(ADCStatus::Off),
+            registers: SAADC_BASE,
+            reference: Cell::new(voltage_reference_in_mv),
+            mode: Cell::new(AdcMode::Idle),
             client: OptionalCell::empty(),
-            requested: Cell::new(ADCStatus::Idle),
-            requested_channel: Cell::new(0),
-            sc_enabled: Cell::new(false),
+            highspeed_client: OptionalCell::empty(),
+            buffer: TakeCell::empty(),
+            length: Cell::new(0),
+            next_buffer: TakeCell::empty(),
+            next_length: Cell::new(0),
         }
     }
 
-    pub fn enable_temperature(&self) {
-        self.common_registers.ccr.modify(CCR::TSEN::SET);
-    }
+    // Calibrate and measure the actual VDD of the board.
+    pub fn calibrate(&self) {
+        self.mode.set(AdcMode::Calibrate);
 
-    pub fn enable(&self) {
-        self.status.set(ADCStatus::PoweringOn);
-
-        // Enable adc clock
-        self.enable_clock();
-
-        //Set Synchronous clock mode
-        self.common_registers.ccr.modify(CCR::CKMODE.val(0b01));
-
-        self.registers.cr.modify(CR::ADVREGEN.val(0b00));
-        self.registers.cr.modify(CR::ADVREGEN.val(0b01));
-
-        // Wait for ADVRGEN to enable
-        // This needs to be synchronous because there is no interrupt signaling
-        // when ADVRGEN becomes enabled
-        // we chose 720 because the frequency is 72MHz and it needs 10 us to become enabled
-        for _i in 0..720 {
-            cortexm4f::support::nop()
-        }
-
-        // Enable ADC Ready interrupt
-        self.registers.ier.modify(IER::ADRDYIE::SET);
-
-        // Clear registers
-        self.registers.isr.modify(ISR::ADRDY::CLEAR);
-        self.registers.cr.modify(CR::ADEN::CLEAR);
-        self.registers.cr.modify(CR::ADCALDIF::CLEAR);
-        self.registers.cr.modify(CR::ADCAL::SET);
-
-        // Wait for calibration
-        while self.registers.cr.is_set(CR::ADCAL) {}
-
-        // Enable ADC
-        self.registers.cr.modify(CR::ADEN::SET);
-        // Enable overrun to overwrite old datas
-        self.registers.cfgr.modify(CFGR::OVRMOD::SET);
+        // Enable the ADC
+        self.registers.enable.write(ENABLE::ENABLE::SET);
+        self.registers.inten.write(INTEN::CALIBRATEDONE::SET);
+        self.registers.tasks_calibrateoffset.write(TASK::TASK::SET);
     }
 
     pub fn handle_interrupt(&self) {
-        // Check if ADC is ready
-        if self.registers.isr.is_set(ISR::ADRDY) {
-            // Clear interrupt
-            self.registers.ier.modify(IER::ADRDYIE::CLEAR);
-            // Set Status
-            if self.status.get() == ADCStatus::PoweringOn {
-                self.status.set(ADCStatus::Idle);
-                match self.requested.get() {
-                    ADCStatus::OneSample => {
-                        let _ = self.sample_u32(self.requested_channel.get());
-                        return;
+        match self.mode.get() {
+            AdcMode::Calibrate => {
+                if self.registers.events_calibratedone.is_set(EVENT::EVENT) {
+                    self.registers
+                        .events_calibratedone
+                        .write(EVENT::EVENT::CLEAR);
+
+                    // After calibration, read VDD to set our voltage reference.
+                    self.registers.ch[0].pselp.write(PSEL::PSEL::VDD);
+                    self.registers.ch[0].pseln.write(PSEL::PSEL::NotConnected);
+
+                    // Configure the ADC for a single read.
+                    self.registers.ch[0].config.write(
+                        CONFIG::GAIN::Gain1_6
+                            + CONFIG::REFSEL::Internal
+                            + CONFIG::TACQ::us10
+                            + CONFIG::RESP::Bypass
+                            + CONFIG::RESN::Bypass
+                            + CONFIG::MODE::SE,
+                    );
+
+                    self.setup_resolution();
+                    self.setup_sample_count(1);
+
+                    // Where to put the reading.
+                    self.registers.result_ptr.set(addr_of!(SAMPLE) as *const _);
+
+                    // No automatic sampling, will trigger manually.
+                    self.registers.samplerate.write(SAMPLERATE::MODE::Task);
+
+                    // Enable the ADC
+                    self.registers.enable.write(ENABLE::ENABLE::SET);
+
+                    // Enable started, sample end, and stopped interrupts.
+                    self.registers
+                        .inten
+                        .write(INTEN::STARTED::SET + INTEN::END::SET + INTEN::STOPPED::SET);
+
+                    self.registers.tasks_start.write(TASK::TASK::SET);
+
+                    // self.registers.enable.write(ENABLE::ENABLE::CLEAR);
+                } else if self.registers.events_started.is_set(EVENT::EVENT) {
+                    self.registers.events_started.write(EVENT::EVENT::CLEAR);
+                    // ADC has started, now issue the sample.
+                    self.registers.tasks_sample.write(TASK::TASK::SET);
+                } else if self.registers.events_end.is_set(EVENT::EVENT) {
+                    self.registers.events_end.write(EVENT::EVENT::CLEAR);
+                    // Reading finished. Turn off the ADC.
+                    self.registers.tasks_stop.write(TASK::TASK::SET);
+                } else if self.registers.events_stopped.is_set(EVENT::EVENT) {
+                    self.registers.events_stopped.write(EVENT::EVENT::CLEAR);
+                    // ADC is stopped. Disable and return value.
+                    self.registers.enable.write(ENABLE::ENABLE::CLEAR);
+
+                    let reading = unsafe { SAMPLE[0] as i16 } as usize;
+
+                    // reading = val * (gain/ref) * 2^12
+                    //         = val * ((1/6)/0.6 V) * 2^12
+                    //         = val * 1/3600 mV * 2^12
+                    // val = (reading * 3600 mV) / 2^12
+                    let val = (reading * 3600) / (1 << 12);
+
+                    // If the reading looks like it exists in a reasonable range
+                    // than save this as the reference.
+                    if val > 1000 && val < 5100 {
+                        self.reference.set(val);
                     }
-                    _ => {}
                 }
             }
-        }
-        // Check if regular group conversion ended
-        if self.registers.isr.is_set(ISR::EOC) {
-            // Clear interrupt
-            self.registers.ier.modify(IER::EOCIE::CLEAR);
-            let data = self.registers.dr.read(DR::RDATA);
-            self.client
-                .map(|client| client.sample_ready((data as u16) << 4));
-            if self.status.get() == ADCStatus::Continuous {
-                self.registers.ier.modify(IER::EOCIE::SET);
+
+            AdcMode::Single => {
+                // Determine what event occurred.
+                if self.registers.events_calibratedone.is_set(EVENT::EVENT) {
+                    self.registers
+                        .events_calibratedone
+                        .write(EVENT::EVENT::CLEAR);
+                    self.registers.enable.write(ENABLE::ENABLE::CLEAR);
+                } else if self.registers.events_started.is_set(EVENT::EVENT) {
+                    self.registers.events_started.write(EVENT::EVENT::CLEAR);
+                    // ADC has started, now issue the sample.
+                    self.registers.tasks_sample.write(TASK::TASK::SET);
+                } else if self.registers.events_end.is_set(EVENT::EVENT) {
+                    self.registers.events_end.write(EVENT::EVENT::CLEAR);
+                    // Reading finished. Turn off the ADC.
+                    self.registers.tasks_stop.write(TASK::TASK::SET);
+                } else if self.registers.events_stopped.is_set(EVENT::EVENT) {
+                    self.registers.events_stopped.write(EVENT::EVENT::CLEAR);
+                    // ADC is stopped. Disable and return value.
+                    self.registers.enable.write(ENABLE::ENABLE::CLEAR);
+
+                    let val = unsafe { SAMPLE[0] as i16 };
+                    self.client.map(|client| {
+                        // shift left to meet the ADC HIL requirement
+                        client.sample_ready(if val < 0 { 0 } else { val << 4 } as u16);
+                    });
+                }
             }
-        }
-        // Check if sequence of regular group conversion ended
-        if self.registers.isr.is_set(ISR::EOS) {
-            // Clear interrupt
-            self.registers.ier.modify(IER::EOSIE::CLEAR);
-            self.registers.isr.modify(ISR::EOS::SET);
-            if self.status.get() == ADCStatus::OneSample {
-                // stop adc
-                self.registers.cr.modify(CR::ADSTP::SET);
-                // set state
-                self.status.set(ADCStatus::Idle);
+
+            AdcMode::HighSpeed => {
+                if self.registers.events_started.is_set(EVENT::EVENT) {
+                    self.registers.events_started.write(EVENT::EVENT::CLEAR);
+
+                    // According to PS1.7 Section 6.23.4, we can set the new
+                    // buffer address after we get the start event.
+                    self.next_buffer.map(|buf| {
+                        // First determine the buffer's length in samples.
+                        let dma_len = cmp::min(buf.len(), self.next_length.get());
+                        if dma_len > 0 {
+                            self.registers.result_ptr.set(buf.as_ptr());
+                        }
+                    });
+
+                    // Trigger sample task to start taking samples.
+                    self.registers.tasks_sample.write(TASK::TASK::SET);
+                } else if self.registers.events_end.is_set(EVENT::EVENT) {
+                    self.registers.events_end.write(EVENT::EVENT::CLEAR);
+
+                    let ret_buf = self.buffer.take().unwrap();
+
+                    // Left shift all samples to the MSB. This handles
+                    // differences in resolution between ADC chips and meets the
+                    // ADC HIL requirement.
+                    let length = self.length.get();
+                    for i in 0..length {
+                        ret_buf[i] <<= 4;
+                    }
+
+                    self.highspeed_client.map(|client| {
+                        client.samples_ready(ret_buf, length);
+                    });
+
+                    // Optionally setup to continue reading. We already
+                    // configured the address if valid.
+                    let length2 = self.next_length.get();
+                    if length2 > 0 {
+                        self.length.set(length2);
+                        self.buffer.put(self.next_buffer.take());
+                        self.registers
+                            .result_maxcnt
+                            .write(RESULT_MAXCNT::MAXCNT.val(length2 as u32));
+                        kernel::debug!("len2 {}", length2);
+
+                        // self.registers.tasks_sample.write(TASK::TASK::SET);
+                        self.registers.tasks_start.write(TASK::TASK::SET);
+                    }
+                } else if self.registers.events_stopped.is_set(EVENT::EVENT) {
+                    self.registers.events_stopped.write(EVENT::EVENT::CLEAR);
+                }
             }
-        }
-        // Check if sampling ended
-        if self.registers.isr.is_set(ISR::EOSMP) {
-            // Clear interrupt
-            self.registers.ier.modify(IER::EOSMPIE::CLEAR);
-            self.registers.isr.modify(ISR::EOSMP::SET);
-        }
-        // Check if overrun occured
-        if self.registers.isr.is_set(ISR::OVR) {
-            // Clear interrupt
-            self.registers.ier.modify(IER::OVRIE::CLEAR);
-            self.registers.isr.modify(ISR::OVR::SET);
+
+            AdcMode::Idle => {}
         }
     }
 
-    pub fn is_enabled_clock(&self) -> bool {
-        self.clock.is_enabled()
+    fn setup_channel(&self, channel: &AdcChannelSetup) {
+        // Positive goes to the channel passed in, negative not connected.
+        self.registers.ch[0]
+            .pselp
+            .write(PSEL::PSEL.val(channel.channel as u32));
+        self.registers.ch[0].pseln.write(PSEL::PSEL::NotConnected);
+
+        // Configure the ADC for a single read.
+        self.registers.ch[0].config.write(
+            CONFIG::GAIN.val(channel.gain as u32)
+                + CONFIG::REFSEL::VDD1_4
+                + CONFIG::TACQ.val(channel.sampling_time as u32)
+                + CONFIG::RESP.val(channel.resp as u32)
+                + CONFIG::RESN.val(channel.resn as u32)
+                + CONFIG::MODE::SE,
+        );
     }
 
-    pub fn enable_clock(&self) {
-        self.clock.enable();
+    fn setup_resolution(&self) {
+        // Set max resolution (with oversampling).
+        self.registers.resolution.write(RESOLUTION::VAL::bit12);
     }
 
-    pub fn disable_clock(&self) {
-        self.clock.disable();
+    fn setup_sample_count(&self, count: usize) {
+        self.registers
+            .result_maxcnt
+            .write(RESULT_MAXCNT::MAXCNT.val(count as u32));
     }
 
-    fn enable_special_channels(&self) {
-        // enabling temperature channel
-        if self.requested_channel.get() == 16 {
-            self.sc_enabled.set(true);
-            self.enable_temperature();
-        }
-    }
-
-    fn sample_u32(&self, channel: u32) -> Result<(), ErrorCode> {
-        if !self.sc_enabled.get() {
-            self.enable_special_channels();
-        }
-        if self.status.get() == ADCStatus::Idle {
-            self.requested.set(ADCStatus::Idle);
-            self.status.set(ADCStatus::OneSample);
-            self.registers.smpr2.modify(SMPR2::SMP16.val(0b100));
-            self.registers.sqr1.modify(SQR1::L.val(0b0000));
-            self.registers.sqr1.modify(SQR1::SQ1.val(channel));
-            self.registers.ier.modify(IER::EOSIE::SET);
-            self.registers.ier.modify(IER::EOCIE::SET);
-            self.registers.ier.modify(IER::EOSMPIE::SET);
-            self.registers.cr.modify(CR::ADSTART::SET);
-            Ok(())
+    fn setup_frequency(&self, frequency: u32) {
+        let raw_cc = 16000000 / frequency;
+        let cc = if raw_cc > 2047 {
+            2047
+        } else if raw_cc < 80 {
+            80
         } else {
-            Err(ErrorCode::BUSY)
-        }
+            raw_cc
+        };
+
+        self.registers
+            .samplerate
+            .write(SAMPLERATE::MODE::Timers + SAMPLERATE::CC.val(cc));
     }
 }
 
-struct AdcClock<'a>(rcc::PeripheralClock<'a>);
-
-impl ClockInterface for AdcClock<'_> {
-    fn is_enabled(&self) -> bool {
-        self.0.is_enabled()
-    }
-
-    fn enable(&self) {
-        self.0.enable();
-    }
-
-    fn disable(&self) {
-        self.0.disable();
-    }
-}
-
+/// Implements an ADC capable reading ADC samples on any channel.
 impl<'a> hil::adc::Adc<'a> for Adc<'a> {
-    type Channel = Channel;
+    type Channel = AdcChannelSetup;
 
     fn sample(&self, channel: &Self::Channel) -> Result<(), ErrorCode> {
-        if self.status.get() == ADCStatus::Off {
-            self.requested.set(ADCStatus::OneSample);
-            self.requested_channel.set(*channel as u32);
-            self.enable();
-            Ok(())
-        } else {
-            self.sample_u32(*channel as u32)
-        }
+        self.setup_channel(channel);
+        self.setup_resolution();
+
+        // Do one measurement.
+        self.registers
+            .result_maxcnt
+            .write(RESULT_MAXCNT::MAXCNT.val(1));
+        // Where to put the reading.
+        self.registers.result_ptr.set(addr_of!(SAMPLE) as *const _);
+
+        // No automatic sampling, will trigger manually.
+        self.registers.samplerate.write(SAMPLERATE::MODE::Task);
+
+        // Enable the ADC
+        self.registers.enable.write(ENABLE::ENABLE::SET);
+
+        // Enable started, sample end, and stopped interrupts.
+        self.registers
+            .inten
+            .write(INTEN::STARTED::SET + INTEN::END::SET + INTEN::STOPPED::SET);
+
+        self.mode.set(AdcMode::Single);
+
+        // Start the SAADC and wait for the started interrupt.
+        self.registers.tasks_start.write(TASK::TASK::SET);
+
+        Ok(())
     }
 
     fn sample_continuous(
@@ -699,20 +612,12 @@ impl<'a> hil::adc::Adc<'a> for Adc<'a> {
         _channel: &Self::Channel,
         _frequency: u32,
     ) -> Result<(), ErrorCode> {
-        // Has to be implementer with timers because the frequency is too high
-        Err(ErrorCode::NOSUPPORT)
+        Err(ErrorCode::FAIL)
     }
 
     fn stop_sampling(&self) -> Result<(), ErrorCode> {
-        if self.status.get() != ADCStatus::Idle && self.status.get() != ADCStatus::Off {
-            self.registers.cr.modify(CR::ADSTP::SET);
-            if self.registers.cfgr.is_set(CFGR::CONT) {
-                self.registers.cfgr.modify(CFGR::CONT::CLEAR);
-            }
-            Ok(())
-        } else {
-            Err(ErrorCode::BUSY)
-        }
+        self.registers.tasks_stop.write(TASK::TASK::SET);
+        Ok(())
     }
 
     fn get_resolution_bits(&self) -> usize {
@@ -720,7 +625,7 @@ impl<'a> hil::adc::Adc<'a> for Adc<'a> {
     }
 
     fn get_voltage_reference_mv(&self) -> Option<usize> {
-        Some(3300)
+        Some(self.reference.get())
     }
 
     fn set_client(&self, client: &'a dyn hil::adc::Client) {
@@ -728,53 +633,81 @@ impl<'a> hil::adc::Adc<'a> for Adc<'a> {
     }
 }
 
-/// Not yet supported
 impl<'a> hil::adc::AdcHighSpeed<'a> for Adc<'a> {
-    /// Capture buffered samples from the ADC continuously at a given
-    /// frequency, calling the client whenever a buffer fills up. The client is
-    /// then expected to either stop sampling or provide an additional buffer
-    /// to sample into. Note that due to hardware constraints the maximum
-    /// frequency range of the ADC is from 187 kHz to 23 Hz (although its
-    /// precision is limited at higher frequencies due to aliasing).
-    ///
-    /// - `channel`: the ADC channel to sample
-    /// - `frequency`: frequency to sample at
-    /// - `buffer1`: first buffer to fill with samples
-    /// - `length1`: number of samples to collect (up to buffer length)
-    /// - `buffer2`: second buffer to fill once the first is full
-    /// - `length2`: number of samples to collect (up to buffer length)
     fn sample_highspeed(
         &self,
-        _channel: &Self::Channel,
-        _frequency: u32,
+        channel: &Self::Channel,
+        frequency: u32,
         buffer1: &'static mut [u16],
-        _length1: usize,
+        length1: usize,
         buffer2: &'static mut [u16],
-        _length2: usize,
+        length2: usize,
     ) -> Result<(), (ErrorCode, &'static mut [u16], &'static mut [u16])> {
-        Err((ErrorCode::NOSUPPORT, buffer1, buffer2))
+        if length1 == 0 {
+            // At least need to take one sample.
+            Err((ErrorCode::INVAL, buffer1, buffer2))
+        } else {
+            // Store the second buffer for later use
+            self.next_buffer.replace(buffer2);
+            self.next_length.set(length2);
+
+            self.setup_channel(channel);
+            self.setup_resolution();
+
+            // Use EasyDMA to save the samples to our buffer.
+            self.registers.result_ptr.set(buffer1.as_ptr());
+
+            // Also need to save these to return to the caller.
+            self.buffer.replace(buffer1);
+            self.length.set(length1);
+
+            // Number of measurements.
+            self.setup_sample_count(length1);
+
+            // Set the frequency best we can.
+            self.setup_frequency(frequency);
+
+            // Enable the ADC
+            self.registers.enable.write(ENABLE::ENABLE::SET);
+
+            // Enable started, sample end, and stopped interrupts.
+            self.registers
+                .inten
+                .write(INTEN::STARTED::SET + INTEN::END::SET + INTEN::STOPPED::SET);
+
+            self.mode.set(AdcMode::HighSpeed);
+
+            // Start the SAADC and wait for the started interrupt.
+            self.registers.tasks_start.write(TASK::TASK::SET);
+
+            Ok(())
+        }
     }
 
-    /// Provide a new buffer to send on-going buffered continuous samples to.
-    /// This is expected to be called after the `samples_ready` callback.
-    ///
-    /// - `buf`: buffer to fill with samples
-    /// - `length`: number of samples to collect (up to buffer length)
     fn provide_buffer(
         &self,
         buf: &'static mut [u16],
-        _length: usize,
+        length: usize,
     ) -> Result<(), (ErrorCode, &'static mut [u16])> {
-        Err((ErrorCode::NOSUPPORT, buf))
+        if self.next_buffer.is_some() {
+            // we've already got a second buffer, we don't need a third yet
+            Err((ErrorCode::BUSY, buf))
+        } else {
+            // store the buffer for later use
+            self.next_buffer.replace(buf);
+            self.next_length.set(length);
+
+            Ok(())
+        }
     }
 
-    /// Reclaim buffers after the ADC is stopped.
-    /// This is expected to be called after `stop_sampling`.
     fn retrieve_buffers(
         &self,
     ) -> Result<(Option<&'static mut [u16]>, Option<&'static mut [u16]>), ErrorCode> {
-        Err(ErrorCode::NOSUPPORT)
+        Ok((self.buffer.take(), self.next_buffer.take()))
     }
 
-    fn set_highspeed_client(&self, _client: &'a dyn hil::adc::HighSpeedClient) {}
+    fn set_highspeed_client(&self, client: &'a dyn hil::adc::HighSpeedClient) {
+        self.highspeed_client.set(client);
+    }
 }
