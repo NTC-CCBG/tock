@@ -31,29 +31,34 @@ pub struct Npcm400DefaultPeripherals<'a> {
     pub clock: crate::clock::Clock,
     pub scfg: crate::scfg::Scfg,
     pub adc: crate::adc::Adc<'a>,
-    pub uarte0: crate::uart::Uarte<'a>,
+    pub uart1: crate::uart::Uart1<'a>,
 }
 
 impl Npcm400DefaultPeripherals<'_> {
     pub fn new() -> Self {
+        let clock = crate::clock::Clock::new(crate::clock::SourceFrequency::_96M);
+        let uart1 = crate::uart::Uart1::new(
+            crate::uart::UART1_BASE,
+            clock
+                .get_clock_source(crate::clock::HighClocks::UART)
+                .expect("UART clock source not found"),
+        );
         Self {
-            clock: crate::clock::Clock::new(),
+            clock,
             scfg: crate::scfg::Scfg::new(),
             adc: crate::adc::Adc::new(3300),
-            uarte0: crate::uart::Uarte::new(crate::uart::UARTE0_BASE),
+            uart1,
         }
     }
     // Necessary for setting up circular dependencies
-    pub fn init(&'static self) {
-
-    }
+    pub fn init(&'static self) {}
 }
 impl kernel::platform::chip::InterruptService for Npcm400DefaultPeripherals<'_> {
     unsafe fn service_interrupt(&self, interrupt: u32) -> bool {
         match interrupt {
             // crate::peripheral_interrupts::GPIOTE => self.gpio_port.handle_interrupt(),
             crate::peripheral_interrupts::ADC => self.adc.handle_interrupt(),
-            crate::peripheral_interrupts::UART0 => self.uarte0.handle_interrupt(),
+            crate::peripheral_interrupts::UART0 => self.uart1.handle_interrupt(),
             _ => return self.service_interrupt(interrupt),
         }
         true

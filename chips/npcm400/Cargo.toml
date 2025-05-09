@@ -15,3 +15,7 @@ kernel = { path = "../../kernel" }
 
 [lints]
 workspace = true
+
+[features]
+uart_interrupt_driven = []
+default = ["uart_interrupt_driven"]

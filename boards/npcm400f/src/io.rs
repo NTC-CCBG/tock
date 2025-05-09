@@ -7,7 +7,8 @@ use kernel::debug::IoWrite;
 use kernel::hil::uart;
 use kernel::hil::uart::Configure;
 
-use npcm400::uart::{Uarte, UARTE0_BASE};
+use npcm400::uart::{Uart1, UART1_BASE};
+use npcm400::clock::{Clock, SourceFrequency, HighClocks};
 
 enum Writer {
     WriterUart(/* initialized */ bool),
@@ -26,13 +27,19 @@ impl IoWrite for Writer {
     fn write(&mut self, buf: &[u8]) -> usize {
         match self {
             Writer::WriterUart(ref mut initialized) => {
-                // Here, we create a second instance of the Uarte struct.
+                // Here, we create a second instance of the Uart1 struct.
                 // This is okay because we only call this during a panic, and
                 // we will never actually process the interrupts
-                let uart = Uarte::new(UARTE0_BASE);
+                let clock = Clock::new(SourceFrequency::_96M);
+                let uart1 = Uart1::new(
+                    UART1_BASE,
+                    clock
+                        .get_clock_source(HighClocks::UART)
+                        .expect("UART clock source not found"),
+                );
                 if !*initialized {
                     *initialized = true;
-                    let _ = uart.configure(uart::Parameters {
+                    let _ = uart1.configure(uart::Parameters {
                         baud_rate: 115200,
                         stop_bits: uart::StopBits::One,
                         parity: uart::Parity::None,
@@ -41,8 +48,8 @@ impl IoWrite for Writer {
                     });
                 }
                 for &c in buf {
-                    unsafe { uart.send_byte(c) }
-                    while !uart.tx_ready() {}
+                    unsafe { uart1.send_byte(c) }
+                    while !uart1.irq_tx_complete() {}
                 }
             }
         }

@@ -171,7 +171,7 @@ pub unsafe fn start() -> (
     //--------------------------------------------------------------------------
 
     let uart_channel =
-        UartChannelComponent::new(uart_channel, &npcm400_peripherals.uarte0).finalize(());
+        UartChannelComponent::new(uart_channel, &npcm400_peripherals.uart1).finalize(());
 
     // Tool for displaying information about processes.
     let process_printer = components::process_printer::ProcessPrinterTextComponent::new()

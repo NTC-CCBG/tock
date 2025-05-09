@@ -46,8 +46,7 @@ impl Component for Npcm400fClockComponent<'_> {
     fn finalize(self, _s: Self::StaticInput) -> Self::Output {
         // Start all of the clocks. Low power operation will require a better
         // approach than this.
-        self.clock
-            .config_clock(npcm400::clock::SourceFrequency::_96M);
+        self.clock.config_clock();
         self.clock.high_clock_on(npcm400::clock::HighClocks::UART);
     }
 }
@@ -104,17 +103,17 @@ pub enum UartChannel<'a> {
 
 pub struct UartChannelComponent {
     uart_channel: UartChannel<'static>,
-    uarte0: &'static npcm400::uart::Uarte<'static>,
+    uart1: &'static npcm400::uart::Uart1<'static>,
 }
 
 impl UartChannelComponent {
     pub fn new(
         uart_channel: UartChannel<'static>,
-        uarte0: &'static npcm400::uart::Uarte<'static>,
+        uart1: &'static npcm400::uart::Uart1<'static>,
     ) -> Self {
         Self {
             uart_channel,
-            uarte0,
+            uart1,
         }
     }
 }
@@ -126,8 +125,8 @@ impl Component for UartChannelComponent {
     fn finalize(self, _s: Self::StaticInput) -> Self::Output {
         match self.uart_channel {
             UartChannel::Pins(_uart_pins) => {
-                self.uarte0.initialize();
-                self.uarte0
+                self.uart1.initialize();
+                self.uart1
             }
             _ => {
                 panic!("UartChannelComponent: Unsupported UART channel variant");

@@ -22,9 +22,7 @@
 
 use kernel::utilities::cells::OptionalCell;
 use kernel::utilities::registers::interfaces::{ReadWriteable, Readable, Writeable};
-use kernel::utilities::registers::{
-    register_bitfields, register_structs, ReadWrite,
-};
+use kernel::utilities::registers::{register_bitfields, register_structs, ReadWrite};
 use kernel::utilities::StaticRef;
 
 register_structs! {
@@ -143,7 +141,6 @@ pub struct FreqMultiplier {
     pub hfcgmh: u8,
     pub hfcgml: u8,
 }
-
 
 /// Frequency multipliers for npcm400
 pub static FREQ_MULTIPLIERS: [FreqMultiplier; 8] = [
@@ -299,6 +296,7 @@ impl Clocks {
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn get_source(&self) -> HighClockSource {
         self.source
     }
@@ -327,6 +325,7 @@ pub struct Clock {
     registers: StaticRef<CdcgRegisters>,
     registers_power: StaticRef<PowerRegisters>,
     client: OptionalCell<&'static dyn ClockClient>,
+    source_freq: SourceFrequency,
 }
 
 pub trait ClockClient {
@@ -339,11 +338,12 @@ pub trait ClockClient {
 
 impl Clock {
     /// Constructor
-    pub const fn new() -> Clock {
+    pub const fn new(src: SourceFrequency) -> Clock {
         Clock {
             registers: CLOCK_BASE,
             registers_power: POWER_BASE,
             client: OptionalCell::empty(),
+            source_freq: src,
         }
     }
 
@@ -404,8 +404,8 @@ impl Clock {
             .modify(Hfcbcd2::APB3DIV.val(prescaler.apb3));
     }
 
-    pub fn config_clock(&self, freq: SourceFrequency) {
-        self.set_frequency(freq);
+    pub fn config_clock(&self) {
+        self.set_frequency(self.source_freq);
         self.set_prescaler();
     }
 
@@ -436,8 +436,30 @@ impl Clock {
         }
     }
 
-    pub fn get_clock_source(&self, clock: HighClocks) -> Option<HighClockSource> {
-        let clock_config = self.find_clock_config(clock);
-        clock_config.map(|config| config.get_source())
+    pub fn get_clock_source(&self, clock: HighClocks) -> Option<u32> {
+        let clock_config = self.find_clock_config(clock)?;
+        let prescaler = self.get_prescaler();
+        Some(match clock_config.source {
+            HighClockSource::APB1 => self.source_freq as u32 / prescaler.apb1 as u32,
+            HighClockSource::APB2 => self.source_freq as u32 / prescaler.apb2 as u32,
+            HighClockSource::APB3 => self.source_freq as u32 / prescaler.apb3 as u32,
+            HighClockSource::AHB6 => self.source_freq as u32 / prescaler.ahb6 as u32,
+            HighClockSource::FIU => self.source_freq as u32 / prescaler.fiu as u32,
+            HighClockSource::I3C => {
+                (self.source_freq as u32 / prescaler.apb1 as u32) / prescaler.i3c as u32
+            }
+            HighClockSource::CORE => self.source_freq as u32 / prescaler.core as u32,
+            HighClockSource::OSC => self.source_freq as u32,
+            HighClockSource::LFCLK => 32_768_u32,
+            HighClockSource::FMCLK => {
+                if self.source_freq as u32 > 50_000_000_u32 {
+                    self.source_freq as u32 / 2
+                } else {
+                    self.source_freq as u32
+                }
+            }
+            HighClockSource::USB20 => 12_000_000_u32,
+            HighClockSource::SIO => 48_000_000_u32,
+        })
     }
 }
