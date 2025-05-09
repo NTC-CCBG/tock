@@ -18,7 +18,6 @@ use kernel::utilities::registers::interfaces::{Readable, Writeable};
 use kernel::utilities::registers::{register_bitfields, ReadOnly, ReadWrite, WriteOnly};
 use kernel::utilities::StaticRef;
 use kernel::ErrorCode;
-use crate::pinmux;
 
 const UARTE_MAX_BUFFER_SIZE: u32 = 0xff;
 
@@ -201,34 +200,7 @@ impl<'a> Uarte<'a> {
     /// Configure which pins the UART should use for txd, rxd, cts and rts
     pub fn initialize(
         &self,
-        txd: pinmux::Pinmux,
-        rxd: pinmux::Pinmux,
-        cts: Option<pinmux::Pinmux>,
-        rts: Option<pinmux::Pinmux>,
     ) {
-        self.registers.pseltxd.write(Psel::PIN.val(txd.into()));
-        self.registers.pselrxd.write(Psel::PIN.val(rxd.into()));
-        cts.map_or_else(
-            || {
-                // If no CTS pin is provided, then we need to mark it as
-                // disconnected in the register.
-                self.registers.pselcts.write(Psel::CONNECT::SET);
-            },
-            |c| {
-                self.registers.pselcts.write(Psel::PIN.val(c.into()));
-            },
-        );
-        rts.map_or_else(
-            || {
-                // If no RTS pin is provided, then we need to mark it as
-                // disconnected in the register.
-                self.registers.pselrts.write(Psel::CONNECT::SET);
-            },
-            |r| {
-                self.registers.pselrts.write(Psel::PIN.val(r.into()));
-            },
-        );
-
         // Make sure we clear the endtx interrupt since that is what we rely on
         // to know when the DMA TX finishes. Normally, we clear this interrupt
         // as we handle it, so this is not necessary. However, a bootloader (or

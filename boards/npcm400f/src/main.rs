@@ -75,16 +75,13 @@ impl KernelResources<Chip> for Platform {
 /// Main function called after RAM initialized.
 #[no_mangle]
 pub unsafe fn main() {
-    let (board_kernel, base_platform, chip, _default_peripherals, _mux_alarm) =
-        npcm400f_lib::start();
-
-    //--------------------------------------------------------------------------
-    // IEEE 802.15.4 and UDP
-    //--------------------------------------------------------------------------
+    let (board_kernel, base_platform, chip, _default_peripherals) = npcm400f_lib::start();
 
     let platform = Platform {
-        base: base_platform
+        base: base_platform,
     };
+
+    debug!("Initialization complete. Entering main loop");
 
     // These symbols are defined in the linker script.
     extern "C" {

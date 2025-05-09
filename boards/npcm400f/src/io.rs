@@ -11,15 +11,9 @@ use npcm400::uart::{Uarte, UARTE0_BASE};
 
 enum Writer {
     WriterUart(/* initialized */ bool),
-    WriterRtt(&'static segger::rtt::SeggerRttMemory<'static>),
 }
 
 static mut WRITER: Writer = Writer::WriterUart(false);
-
-/// Set the RTT memory buffer used to output panic messages.
-pub unsafe fn set_rtt_memory(rtt_memory: &'static segger::rtt::SeggerRttMemory<'static>) {
-    WRITER = Writer::WriterRtt(rtt_memory);
-}
 
 impl Write for Writer {
     fn write_str(&mut self, s: &str) -> ::core::fmt::Result {
@@ -51,7 +45,6 @@ impl IoWrite for Writer {
                     while !uart.tx_ready() {}
                 }
             }
-            Writer::WriterRtt(rtt_memory) => rtt_memory.write_sync(buf),
         }
         buf.len()
     }
