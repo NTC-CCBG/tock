@@ -160,7 +160,7 @@ impl<'a> Uart1<'a> {
 
     /// Configure which pins the UART should use for txd, rxd, cts and rts
     pub fn initialize(&self) {
-        // self.enable_uart();
+        self.set_baud_rate(115200, self.src_freq);
     }
 
     fn set_baud_rate_prescaler(&self, baud_rate: u32, src_freq: u32) {
@@ -216,13 +216,15 @@ impl<'a> Uart1<'a> {
             self.registers.ufctrl.modify(Ufctrl::FIFO_EN::SET);
 
             // Disable all UART tx FIFO interrupts
+            self.irq_rx_disable();
             self.irq_tx_disable();
 
             // Clear UART rx FIFO
             self.clear_rx_fifo();
 
             // Configure UART interrupts
-            // TODO: add isr handler
+            self.irq_rx_enable();
+            self.irq_tx_enable();
         }
     }
 
@@ -332,10 +334,14 @@ impl<'a> Uart1<'a> {
 
     /// FIFO
     fn fifo_fill(&self, tx_data: &[u8], size: usize) -> bool {
+        if size == 0 {
+            return false;
+        }
+        let capped_size = min(size, tx_data.len());
         let mut tx_bytes = 0;
 
         // If Tx FIFO is still ready to send
-        while (size - tx_bytes > 0) && self.tx_fifo_ready() {
+        while (capped_size > tx_bytes) && self.tx_fifo_ready() {
             // Put a character into Tx FIFO
             self.registers.utbuf.set(tx_data[tx_bytes].into());
             tx_bytes += 1;
@@ -377,7 +383,7 @@ impl<'a> Uart1<'a> {
     #[cfg(feature = "uart_interrupt_driven")]
     pub fn handle_interrupt(&self) {
         if self.tx_fifo_ready() {
-            self.irq_tx_disable();
+            // self.irq_tx_disable();
 
             let rem = self.tx_remaining_bytes.get();
 
@@ -396,13 +402,13 @@ impl<'a> Uart1<'a> {
                     });
                 } else {
                     // Continue transmitting
-                    self.irq_tx_enable();
+                    // self.irq_tx_enable();
                 }
             }
         }
 
         if self.rx_fifo_available() {
-            self.irq_rx_disable();
+            // self.irq_rx_disable();
 
             let rem = self.rx_remaining_bytes.get();
 
@@ -427,7 +433,7 @@ impl<'a> Uart1<'a> {
                     });
                 });
             } else {
-                self.irq_rx_enable();
+                // self.irq_rx_enable();
             }
         }
     }
@@ -470,7 +476,7 @@ impl<'a> uart::Transmit<'a> for Uart1<'a> {
             self.poll_out(first_byte);
 
             if tx_len > 1 {
-                self.irq_tx_enable();
+                // self.irq_tx_enable();
             }
 
             Ok(())
@@ -500,7 +506,7 @@ impl uart::Configure for Uart1<'_> {
             return Err(ErrorCode::NOSUPPORT);
         }
 
-        self.set_baud_rate(params.baud_rate, self.src_freq);
+        // self.set_baud_rate(params.baud_rate, self.src_freq);
 
         Ok(())
     }
@@ -534,7 +540,7 @@ impl<'a> uart::Receive<'a> for Uart1<'a> {
 
             // Enable RX interrupt if more than one byte is expected
             if read_length > 1 {
-                self.irq_rx_enable();
+                // self.irq_rx_enable();
             }
         }
 

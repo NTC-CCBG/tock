@@ -78,7 +78,7 @@ pub unsafe fn panic_fmt(pi: &core::panic::PanicInfo) -> ! {
         &mut [led],
         writer,
         pi,
-        &cortexm4f::support::nop,
+        &cortexm4::support::nop,
         &*addr_of!(PROCESSES),
         &*addr_of!(CHIP),
         &*addr_of!(PROCESS_PRINTER),

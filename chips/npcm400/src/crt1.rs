@@ -69,10 +69,13 @@ pub static BASE_VECTORS: [unsafe extern "C" fn(); 16] = [
 )]
 // used Ensures that the symbol is kept until the final binary
 #[cfg_attr(all(target_arch = "arm", target_os = "none"), used)]
-pub static IRQS: [unsafe extern "C" fn(); 80] = [CortexM4F::GENERIC_ISR; 80];
+pub static IRQS: [unsafe extern "C" fn(); 82] = [CortexM4F::GENERIC_ISR; 82];
 
 #[no_mangle]
 pub unsafe extern "C" fn init() {
+    cortexm4f::nvic::disable_all();
+    cortexm4f::nvic::clear_all_pending();
+
     // Explicitly tell the core where Tock's vector table is located. If Tock is the
     // only thing on the chip then this is effectively a no-op. If, however, there is
     // a bootloader present then we want to ensure that the vector table is set
@@ -80,6 +83,5 @@ pub unsafe extern "C" fn init() {
     // so that any errors early in the Tock boot process trap back to the bootloader.
     // To be safe we unconditionally set the vector table.
     scb::set_vector_table_offset(BASE_VECTORS.as_ptr().cast::<()>());
-
-    nvic::enable_all();
+    cortexm4f::nvic::enable_all();
 }

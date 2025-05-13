@@ -60,7 +60,7 @@ pub struct Platform {
     console: &'static capsules_core::console::Console<'static>,
     pub ipc: kernel::ipc::IPC<{ NUM_PROCS as u8 }>,
     scheduler: &'static RoundRobinSched<'static>,
-    systick: cortexm4f::systick::SysTick,
+    systick: cortexm4::systick::SysTick,
 }
 
 impl SyscallDriverLookup for Platform {
@@ -81,7 +81,7 @@ impl KernelResources<Chip> for Platform {
     type SyscallFilter = ();
     type ProcessFault = ();
     type Scheduler = RoundRobinSched<'static>;
-    type SchedulerTimer = cortexm4f::systick::SysTick;
+    type SchedulerTimer = cortexm4::systick::SysTick;
     type WatchDog = ();
     type ContextSwitchCallback = ();
 
@@ -173,11 +173,6 @@ pub unsafe fn start() -> (
     let uart_channel =
         UartChannelComponent::new(uart_channel, &npcm400_peripherals.uart1).finalize(());
 
-    // Tool for displaying information about processes.
-    let process_printer = components::process_printer::ProcessPrinterTextComponent::new()
-        .finalize(components::process_printer_text_component_static!());
-    PROCESS_PRINTER = Some(process_printer);
-
     // Virtualize the UART channel for the console and for kernel debug.
     let uart_mux = components::console::UartMuxComponent::new(uart_channel, 115200)
         .finalize(components::uart_mux_component_static!());
@@ -189,6 +184,10 @@ pub unsafe fn start() -> (
         uart_mux,
     )
     .finalize(components::console_component_static!());
+
+    // Create the debugger object that handles calls to `debug!()`.
+    components::debug_writer::DebugWriterComponent::new(uart_mux)
+        .finalize(components::debug_writer_component_static!());
 
     //--------------------------------------------------------------------------
     // PLATFORM SETUP, SCHEDULER, AND START KERNEL LOOP
@@ -205,10 +204,10 @@ pub unsafe fn start() -> (
             &memory_allocation_capability,
         ),
         scheduler,
-        systick: cortexm4f::systick::SysTick::new_with_calibration(64000000),
+        systick: cortexm4::systick::SysTick::new_with_calibration(96_000_000),
     };
 
-    debug!("Initialization complete. Entering main loop\r");
+    // debug!("Initialization complete. Entering main loop\r");
     // debug!("{}", &*addr_of!(npcm400::ficr::FICR_INSTANCE));
 
     (board_kernel, platform, chip, npcm400_peripherals)

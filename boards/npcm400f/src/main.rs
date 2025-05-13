@@ -81,7 +81,9 @@ pub unsafe fn main() {
         base: base_platform,
     };
 
-    debug!("Initialization complete. Entering main loop");
+    debug!("A");
+
+    // debug!("Initialization complete. Entering main loop");
 
     // These symbols are defined in the linker script.
     extern "C" {

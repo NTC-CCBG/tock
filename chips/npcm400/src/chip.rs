@@ -58,7 +58,7 @@ impl kernel::platform::chip::InterruptService for Npcm400DefaultPeripherals<'_> 
         match interrupt {
             // crate::peripheral_interrupts::GPIOTE => self.gpio_port.handle_interrupt(),
             crate::peripheral_interrupts::ADC => self.adc.handle_interrupt(),
-            crate::peripheral_interrupts::UART0 => self.uart1.handle_interrupt(),
+            crate::peripheral_interrupts::CR_UART1 => self.uart1.handle_interrupt(),
             _ => return self.service_interrupt(interrupt),
         }
         true

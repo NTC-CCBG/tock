@@ -3,14 +3,13 @@
 /* Copyright Tock Contributors 2023.                                  */
 
 /* Memory layout for the NPCM400F
- * rom = 256KB (LENGTH = 0x00200000)
- * ram = 764KB */
+ * sram = 768KB (LENGTH = 0x00200000) */
 
 MEMORY
 {
-  rom (rx)  : ORIGIN = 0x00080000, LENGTH = 256K
-  prog (rx) : ORIGIN = 0x00180000, LENGTH = 100K
-  ram (rwx) : ORIGIN = 0x10008000, LENGTH = 764K
+  rom (rx)  : ORIGIN = 0x10008000, LENGTH = 256K
+  ram (rwx) : ORIGIN = 0x10048000, LENGTH = 256K
+  prog (rx) : ORIGIN = 0x10088000, LENGTH = 128K
 }
 
 PAGE_SIZE = 2K;
