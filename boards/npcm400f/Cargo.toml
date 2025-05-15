@@ -9,9 +9,6 @@ authors.workspace = true
 build = "../build.rs"
 edition.workspace = true
 
-[lib]
-name = "npcm400f_lib"
-
 [[bin]]
 name = "npcm400f"
 path = "src/main.rs"

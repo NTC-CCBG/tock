@@ -130,7 +130,7 @@ pub struct Uart1<'a> {
     rx_remaining_bytes: Cell<usize>,
     // rx_abort_in_progress: Cell<bool>,
     // offset: Cell<usize>,
-    src_freq: u32,
+    // pub src_freq: u32,
 }
 
 #[derive(Copy, Clone)]
@@ -141,7 +141,7 @@ pub struct UARTParams {
 impl<'a> Uart1<'a> {
     /// Constructor
     // This should only be constructed once
-    pub const fn new(regs: StaticRef<UarteRegisters>, src: u32) -> Uart1<'a> {
+    pub const fn new(regs: StaticRef<UarteRegisters>) -> Uart1<'a> {
         Uart1 {
             registers: regs,
             tx_client: OptionalCell::empty(),
@@ -154,13 +154,13 @@ impl<'a> Uart1<'a> {
             rx_remaining_bytes: Cell::new(0),
             // rx_abort_in_progress: Cell::new(false),
             // offset: Cell::new(0),
-            src_freq: src,
+            // src_freq: src,
         }
     }
 
     /// Configure which pins the UART should use for txd, rxd, cts and rts
-    pub fn initialize(&self) {
-        self.set_baud_rate(115200, self.src_freq);
+    pub fn initialize(&self, src_freq: u32) {
+        self.set_baud_rate(115200, src_freq);
     }
 
     fn set_baud_rate_prescaler(&self, baud_rate: u32, src_freq: u32) {
@@ -191,9 +191,7 @@ impl<'a> Uart1<'a> {
             prescalar += 5;
         }
 
-        if opt_dev > 0 {
-            opt_dev -= 1;
-        }
+        opt_dev = opt_dev.saturating_sub(1);
 
         // Write to registers
         self.registers.upsr.write(
@@ -225,6 +223,16 @@ impl<'a> Uart1<'a> {
             // Configure UART interrupts
             self.irq_rx_enable();
             self.irq_tx_enable();
+
+            // TODO: Debug
+            unsafe {
+                // devalta
+                *(0x400C_301A_i32 as *mut u8) = 0x80_u8;
+                // devaltc
+                *(0x400C_301C_i32 as *mut u8) = 0x40_u8;
+                // clock: UART_PD on
+                *(0x4000_D008_i32 as *mut u8) = 0x10_u8;
+            }
         }
     }
 
@@ -343,7 +351,7 @@ impl<'a> Uart1<'a> {
         // If Tx FIFO is still ready to send
         while (capped_size > tx_bytes) && self.tx_fifo_ready() {
             // Put a character into Tx FIFO
-            self.registers.utbuf.set(tx_data[tx_bytes].into());
+            self.registers.utbuf.set(tx_data[tx_bytes]);
             tx_bytes += 1;
         }
 
@@ -356,7 +364,7 @@ impl<'a> Uart1<'a> {
         // While at least one byte is in the Rx FIFO
         while (size - rx_bytes > 0) && self.rx_fifo_available() {
             // Receive one byte from Rx FIFO
-            rx_data[rx_bytes] = self.registers.urbuf.get() as u8;
+            rx_data[rx_bytes] = self.registers.urbuf.get();
             rx_bytes += 1;
         }
 
@@ -382,60 +390,60 @@ impl<'a> Uart1<'a> {
     #[inline(never)]
     #[cfg(feature = "uart_interrupt_driven")]
     pub fn handle_interrupt(&self) {
-        if self.tx_fifo_ready() {
-            // self.irq_tx_disable();
+        // if self.tx_fifo_ready() {
+        //     self.irq_tx_disable();
 
-            let rem = self.tx_remaining_bytes.get();
+        //     let rem = self.tx_remaining_bytes.get();
 
-            if rem > 0 {
-                self.tx_buffer.map(|buf| {
-                    self.poll_out(buf[self.tx_len.get() - rem]);
-                });
-                self.tx_remaining_bytes.set(rem - 1);
+        //     if rem > 0 {
+        //         self.tx_buffer.map(|buf| {
+        //             self.poll_out(buf[self.tx_len.get() - rem]);
+        //         });
+        //         self.tx_remaining_bytes.set(rem - 1);
 
-                if rem - 1 == 0 {
-                    // All bytes have been transmitted
-                    self.tx_client.map(|client| {
-                        self.tx_buffer.take().map(|tx_buffer| {
-                            client.transmitted_buffer(tx_buffer, self.tx_len.get(), Ok(()));
-                        });
-                    });
-                } else {
-                    // Continue transmitting
-                    // self.irq_tx_enable();
-                }
-            }
-        }
+        //         if rem - 1 == 0 {
+        //             // All bytes have been transmitted
+        //             self.tx_client.map(|client| {
+        //                 self.tx_buffer.take().map(|tx_buffer| {
+        //                     client.transmitted_buffer(tx_buffer, self.tx_len.get(), Ok(()));
+        //                 });
+        //             });
+        //         } else {
+        //             // Continue transmitting
+        //             self.irq_tx_enable();
+        //         }
+        //     }
+        // }
 
-        if self.rx_fifo_available() {
-            // self.irq_rx_disable();
+        // if self.rx_fifo_available() {
+        //     self.irq_rx_disable();
 
-            let rem = self.rx_remaining_bytes.get();
+        //     let rem = self.rx_remaining_bytes.get();
 
-            if rem > 0 {
-                self.rx_buffer.map(|buf| {
-                    self.poll_in(&mut buf[self.rx_len.get() - rem]);
-                });
-            }
+        //     if rem > 0 {
+        //         self.rx_buffer.map(|buf| {
+        //             self.poll_in(&mut buf[self.rx_len.get() - rem]);
+        //         });
+        //     }
 
-            self.rx_remaining_bytes.set(rem - 1);
+        //     self.rx_remaining_bytes.set(rem - 1);
 
-            if rem - 1 == 0 {
-                // Signal client that the read is done
-                self.rx_client.map(|client| {
-                    self.rx_buffer.take().map(|rx_buffer| {
-                        client.received_buffer(
-                            rx_buffer,
-                            self.rx_len.get(),
-                            Ok(()),
-                            uart::Error::None,
-                        );
-                    });
-                });
-            } else {
-                // self.irq_rx_enable();
-            }
-        }
+        //     if rem - 1 == 0 {
+        //         // Signal client that the read is done
+        //         self.rx_client.map(|client| {
+        //             self.rx_buffer.take().map(|rx_buffer| {
+        //                 client.received_buffer(
+        //                     rx_buffer,
+        //                     self.rx_len.get(),
+        //                     Ok(()),
+        //                     uart::Error::None,
+        //                 );
+        //             });
+        //         });
+        //     } else {
+        //         self.irq_rx_enable();
+        //     }
+        // }
     }
 
     /// Transmit one byte at the time and the client is responsible for polling
@@ -468,15 +476,21 @@ impl<'a> uart::Transmit<'a> for Uart1<'a> {
         } else if self.tx_buffer.is_some() {
             Err((ErrorCode::BUSY, tx_data))
         } else {
-            let first_byte = tx_data[0];
-            self.tx_buffer.replace(tx_data);
-            self.tx_len.set(tx_len);
-            self.tx_remaining_bytes.set(tx_len - 1);
+            {
+                // let first_byte = tx_data[0];
+                // self.tx_buffer.replace(tx_data);
+                // self.tx_len.set(tx_len);
+                // self.tx_remaining_bytes.set(tx_len - 1);
 
-            self.poll_out(first_byte);
+                // self.poll_out(first_byte);
 
-            if tx_len > 1 {
-                // self.irq_tx_enable();
+                // if tx_len > 1 {
+                //     self.irq_tx_enable();
+                // }
+            }
+
+            for i in 0..tx_len {
+                self.poll_out(tx_data[i]);
             }
 
             Ok(())
@@ -506,7 +520,7 @@ impl uart::Configure for Uart1<'_> {
             return Err(ErrorCode::NOSUPPORT);
         }
 
-        // self.set_baud_rate(params.baud_rate, self.src_freq);
+        self.set_baud_rate(params.baud_rate, 96_000_000);
 
         Ok(())
     }
@@ -540,7 +554,7 @@ impl<'a> uart::Receive<'a> for Uart1<'a> {
 
             // Enable RX interrupt if more than one byte is expected
             if read_length > 1 {
-                // self.irq_rx_enable();
+                self.irq_rx_enable();
             }
         }
 
@@ -566,45 +580,6 @@ mod tests {
         assert_eq!(u.get_divider_for_baud(0), Err(ErrorCode::INVAL));
         assert_eq!(u.get_divider_for_baud(4_000_000), Err(ErrorCode::INVAL));
 
-        // The constants below are the list from the Nordic technical documents.
-        //
-        // n.b., some datasheet constants do not match formula constants,
-        // so we skip those, see nordic forum thread for details:
-        // https://devzone.nordicsemi.com/f/nordic-q-a/84204/framing-error-and-noisy-data-when-using-uarte-at-high-baud-rate
-        //
-        // This is a *datasheet bug*, i.e., for a target baud of 115200, the
-        // datasheet divisor yields 115108 (-0.079% err) where direct
-        // computation of the divider yields 115203 (+0.002% err). Both work in
-        // practice, but the error here is an annoying and uncharacteristic
-        // Nordic quirk.
         assert_eq!(u.get_divider_for_baud(1200), Ok(0x0004F000));
-        assert_eq!(u.get_divider_for_baud(2400), Ok(0x0009D000));
-        assert_eq!(u.get_divider_for_baud(4800), Ok(0x0013B000));
-        assert_eq!(u.get_divider_for_baud(9600), Ok(0x00275000));
-        //assert_eq!(u.get_divider_for_baud(14400), Ok(0x003AF000));
-        assert_eq!(u.get_divider_for_baud(19200), Ok(0x004EA000));
-        //assert_eq!(u.get_divider_for_baud(28800), Ok(0x0075C000));
-        //assert_eq!(u.get_divider_for_baud(38400), Ok(0x009D0000));
-        //assert_eq!(u.get_divider_for_baud(57600), Ok(0x00EB0000));
-        assert_eq!(u.get_divider_for_baud(76800), Ok(0x013A9000));
-        //assert_eq!(u.get_divider_for_baud(115200), Ok(0x01D60000));
-        //assert_eq!(u.get_divider_for_baud(230400), Ok(0x03B00000));
-        assert_eq!(u.get_divider_for_baud(250000), Ok(0x04000000));
-        //assert_eq!(u.get_divider_for_baud(460800), Ok(0x07400000));
-        //assert_eq!(u.get_divider_for_baud(921600), Ok(0x0F000000));
-        assert_eq!(u.get_divider_for_baud(1000000), Ok(0x10000000));
-        //
-        // For completeness of testing, we do verify that the calculation works
-        // as-expected to generate the empirically correct divisors.  (i.e.,
-        // these are not the datasheet constants, but are the correct divisors
-        // for the desired bauds):
-        assert_eq!(u.get_divider_for_baud(14400), Ok(0x003B0000));
-        assert_eq!(u.get_divider_for_baud(28800), Ok(0x0075F000));
-        assert_eq!(u.get_divider_for_baud(38400), Ok(0x009D5000));
-        assert_eq!(u.get_divider_for_baud(57600), Ok(0x00EBF000));
-        assert_eq!(u.get_divider_for_baud(115200), Ok(0x01D7E000));
-        assert_eq!(u.get_divider_for_baud(230400), Ok(0x03AFB000));
-        assert_eq!(u.get_divider_for_baud(460800), Ok(0x075F7000));
-        assert_eq!(u.get_divider_for_baud(921600), Ok(0x0EBEE000));
     }
 }

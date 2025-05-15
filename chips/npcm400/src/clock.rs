@@ -325,7 +325,7 @@ pub struct Clock {
     registers: StaticRef<CdcgRegisters>,
     registers_power: StaticRef<PowerRegisters>,
     client: OptionalCell<&'static dyn ClockClient>,
-    source_freq: SourceFrequency,
+    pub source_freq: SourceFrequency,
 }
 
 pub trait ClockClient {
@@ -368,14 +368,26 @@ impl Clock {
             panic!("Invalid frequency: {:?}.", freq);
         }
         let freq_multiplier = self.get_frequency_multiplier(freq);
+
+        // Resetting the OFMCLK (even to the same value) will make the clock
+        // unstable for a little which can affect peripheral communication like
+        // eSPI. Skip this if not needed.
         if let Some(freq_multiplier) = freq_multiplier {
             if freq_multiplier.hfcgn != self.registers.hfcgn.get()
                 || freq_multiplier.hfcgmh != self.registers.hfcgmh.get()
                 || freq_multiplier.hfcgml != self.registers.hfcgml.get()
             {
+                // Configure frequency multiplier M/N values according to
+                // the requested OFMCLK (Unit:Hz).
                 self.registers.hfcgml.set(freq_multiplier.hfcgml);
                 self.registers.hfcgmh.set(freq_multiplier.hfcgmh);
                 self.registers.hfcgn.set(freq_multiplier.hfcgn);
+
+                // Load M and N values into the frequency multiplier
+                self.registers.hfcgctrl.modify(HfcgCtrl::LOAD::SET);
+
+                // Wait for stable
+                while self.registers.hfcgctrl.is_set(HfcgCtrl::CLK_CHNG) {}
             }
         } else {
             // Log or handle the error case where freq_multiplier is None
@@ -388,6 +400,7 @@ impl Clock {
         prescaler
     }
 
+    // Set all clock prescalers of core and peripherals.
     fn set_prescaler(&self) {
         let prescaler = self.get_prescaler();
         self.registers

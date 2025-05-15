@@ -7,8 +7,8 @@ use kernel::debug::IoWrite;
 use kernel::hil::uart;
 use kernel::hil::uart::Configure;
 
+use npcm400::clock::{Clock, HighClocks, SourceFrequency};
 use npcm400::uart::{Uart1, UART1_BASE};
-use npcm400::clock::{Clock, SourceFrequency, HighClocks};
 
 enum Writer {
     WriterUart(/* initialized */ bool),
@@ -30,27 +30,26 @@ impl IoWrite for Writer {
                 // Here, we create a second instance of the Uart1 struct.
                 // This is okay because we only call this during a panic, and
                 // we will never actually process the interrupts
-                let clock = Clock::new(SourceFrequency::_96M);
-                let uart1 = Uart1::new(
-                    UART1_BASE,
-                    clock
-                        .get_clock_source(HighClocks::UART)
-                        .expect("UART clock source not found"),
-                );
+
+                // let clock = Clock::new(SourceFrequency::_96M);
+                
+                let uart1 = Uart1::new(UART1_BASE);
                 if !*initialized {
                     *initialized = true;
-                    let _ = uart1.configure(uart::Parameters {
-                        baud_rate: 115200,
-                        stop_bits: uart::StopBits::One,
-                        parity: uart::Parity::None,
-                        hw_flow_control: false,
-                        width: uart::Width::Eight,
-                    });
+                    // let _ = uart1.configure(uart::Parameters {
+                    //     baud_rate: 115200,
+                    //     stop_bits: uart::StopBits::One,
+                    //     parity: uart::Parity::None,
+                    //     hw_flow_control: false,
+                    //     width: uart::Width::Eight,
+                    // }, );
                 }
-                for &c in buf {
-                    unsafe { uart1.send_byte(c) }
-                    while !uart1.irq_tx_complete() {}
-                }
+
+                // TODO: skip for now
+                // for &c in buf {
+                //     unsafe { uart1.send_byte(c) }
+                //     while !uart1.irq_tx_complete() {}
+                // }
             }
         }
         buf.len()

@@ -14,8 +14,11 @@ pub struct NPCM400<'a, I: InterruptService + 'a> {
 
 impl<'a, I: InterruptService + 'a> NPCM400<'a, I> {
     pub unsafe fn new(interrupt_service: &'a I) -> Self {
+        let mpu = cortexm4f::mpu::MPU::new();
+        // Need to disable the MPU because the bootloader seems to set it up.
+        // mpu.clear_mpu();
         Self {
-            mpu: cortexm4f::mpu::MPU::new(),
+            mpu,
             userspace_kernel_boundary: cortexm4f::syscall::SysCall::new(),
             interrupt_service,
         }
@@ -36,27 +39,22 @@ pub struct Npcm400DefaultPeripherals<'a> {
 
 impl Npcm400DefaultPeripherals<'_> {
     pub fn new() -> Self {
-        let clock = crate::clock::Clock::new(crate::clock::SourceFrequency::_96M);
-        let uart1 = crate::uart::Uart1::new(
-            crate::uart::UART1_BASE,
-            clock
-                .get_clock_source(crate::clock::HighClocks::UART)
-                .expect("UART clock source not found"),
-        );
         Self {
-            clock,
+            clock: crate::clock::Clock::new(crate::clock::SourceFrequency::_96M),
             scfg: crate::scfg::Scfg::new(),
             adc: crate::adc::Adc::new(3300),
-            uart1,
+            uart1: crate::uart::Uart1::new(crate::uart::UART1_BASE),
         }
     }
     // Necessary for setting up circular dependencies
+    /// This method is intended for setting up circular dependencies
+    /// between peripherals. It should be called during the initialization
+    /// phase to ensure proper setup.
     pub fn init(&'static self) {}
 }
 impl kernel::platform::chip::InterruptService for Npcm400DefaultPeripherals<'_> {
     unsafe fn service_interrupt(&self, interrupt: u32) -> bool {
         match interrupt {
-            // crate::peripheral_interrupts::GPIOTE => self.gpio_port.handle_interrupt(),
             crate::peripheral_interrupts::ADC => self.adc.handle_interrupt(),
             crate::peripheral_interrupts::CR_UART1 => self.uart1.handle_interrupt(),
             _ => return self.service_interrupt(interrupt),

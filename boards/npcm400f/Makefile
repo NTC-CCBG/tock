@@ -8,7 +8,6 @@
 include ../Makefile.common
 
 OPENOCD=openocd
-PYTHON_EXECUTABLE=python3
 POST_BUILD_SCRIPT=$(TOCK_ROOT_DIRECTORY)boards/npcm400f/esiost/esiost.py
 
 # Default target for installing the kernel.

@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-#
-# Copyright (c) 2024 Nuvoton Technology Corporation
-#
+
 # SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2024 Nuvoton Technology Corporation
 
 # This script will append/paste specific header to tell ROM code (Booter) of
 # NPCM eSIO series how to load the firmware from flash to code ram

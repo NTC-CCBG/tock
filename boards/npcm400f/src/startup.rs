@@ -40,6 +40,21 @@ impl<'a> Npcm400fClockComponent<'a> {
     }
 }
 
+// TODO: Removed
+/// Macro to write a u8 value to a memory-mapped register address.
+macro_rules! write_reg8 {
+    ($addr:expr, $val:expr) => {
+        unsafe {
+            *($addr as *mut u8) = $val as u8;
+        }
+    };
+}
+macro_rules! read_reg8 {
+    ($addr:expr) => {
+        unsafe { *($addr as *mut u8) }
+    };
+}
+
 impl Component for Npcm400fClockComponent<'_> {
     type StaticInput = ();
     type Output = ();
@@ -102,19 +117,12 @@ pub enum UartChannel<'a> {
 }
 
 pub struct UartChannelComponent {
-    uart_channel: UartChannel<'static>,
     uart1: &'static npcm400::uart::Uart1<'static>,
 }
 
 impl UartChannelComponent {
-    pub fn new(
-        uart_channel: UartChannel<'static>,
-        uart1: &'static npcm400::uart::Uart1<'static>,
-    ) -> Self {
-        Self {
-            uart_channel,
-            uart1,
-        }
+    pub fn new(uart1: &'static npcm400::uart::Uart1<'static>) -> Self {
+        Self { uart1 }
     }
 }
 
@@ -123,14 +131,7 @@ impl Component for UartChannelComponent {
     type Output = &'static dyn kernel::hil::uart::Uart<'static>;
 
     fn finalize(self, _s: Self::StaticInput) -> Self::Output {
-        match self.uart_channel {
-            UartChannel::Pins(_uart_pins) => {
-                self.uart1.initialize();
-                self.uart1
-            }
-            _ => {
-                panic!("UartChannelComponent: Unsupported UART channel variant");
-            }
-        }
+        self.uart1.initialize(96_000_000);
+        self.uart1
     }
 }

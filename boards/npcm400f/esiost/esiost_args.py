@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-#
-# Copyright (c) 2024 Nuvoton Technology Corporation
-#
+
 # SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2024 Nuvoton Technology Corporation
 
 # This file contains general functions for ESIOST application
 
