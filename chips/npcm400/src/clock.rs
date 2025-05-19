@@ -403,18 +403,11 @@ impl Clock {
     // Set all clock prescalers of core and peripherals.
     fn set_prescaler(&self) {
         let prescaler = self.get_prescaler();
-        self.registers
-            .hfcgp
-            .modify(HfcgP::FPRED.val(prescaler.fiu) + HfcgP::AHB6DIV.val(prescaler.ahb6));
-        self.registers
-            .hfcbcd
-            .modify(Hfcbcd::APB1DIV.val(prescaler.apb1) + Hfcbcd::APB2DIV.val(prescaler.apb2));
-        self.registers
-            .hfcbcd1
-            .modify(Hfcbcd1::FIUDIV.val(prescaler.fiu));
-        self.registers
-            .hfcbcd2
-            .modify(Hfcbcd2::APB3DIV.val(prescaler.apb3));
+
+        self.registers.hfcgp.set(prescaler.fiu + prescaler.ahb6);
+        self.registers.hfcbcd.set(prescaler.apb1 + prescaler.apb2);
+        self.registers.hfcbcd1.set(prescaler.fiu);
+        self.registers.hfcbcd2.set(prescaler.apb3);
     }
 
     pub fn config_clock(&self) {
@@ -433,19 +426,13 @@ impl Clock {
 
     pub fn high_clock_on(&self, clock: HighClocks) {
         if let Some(clock_config) = self.find_clock_config(clock) {
-            if let Err(e) = clock_config.clock_on(self.registers_power) {
-                // Handle the error, e.g., log it or propagate it
-                panic!("Failed to turn on high clock: {}", e);
-            }
+            clock_config.clock_on(self.registers_power).unwrap()
         }
     }
 
     pub fn high_clock_off(&self, clock: HighClocks) {
         if let Some(clock_config) = self.find_clock_config(clock) {
-            if let Err(e) = clock_config.clock_off(self.registers_power) {
-                // Handle the error, e.g., log it or propagate it
-                panic!("Failed to turn off high clock: {}", e);
-            }
+            clock_config.clock_off(self.registers_power).unwrap()
         }
     }
 

@@ -9,10 +9,6 @@ authors.workspace = true
 build = "../build.rs"
 edition.workspace = true
 
-[[bin]]
-name = "npcm400f"
-path = "src/main.rs"
-
 [dependencies]
 components = { path = "../components" }
 cortexm4 = { path = "../../arch/cortex-m4" }

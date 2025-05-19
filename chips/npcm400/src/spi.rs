@@ -2,359 +2,354 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 // Copyright Tock Contributors 2022.
 
-//! Implementation of SPI for NRF52 using EasyDMA.
-//!
-//! This file only implements support for the three SPI master (`SPIM`)
-//! peripherals, and not SPI slave (`SPIS`).
-//!
-//! Although `kernel::hil::spi::SpiMaster` is implemented for `SPIM`,
-//! only the functions marked with `x` are fully defined:
-//!
-//! * ✓ set_client
-//! * ✓ init
-//! * ✓ is_busy
-//! * ✓ read_write_bytes
-//! * write_byte
-//! * read_byte
-//! * read_write_byte
-//! * ✓ specify_chip_select
-//! * ✓ set_rate
-//! * ✓ get_rate
-//! * ✓ set_polarity
-//! * ✓ get_polarity
-//! * ✓ set_phase
-//! * ✓ get_phase
-//! * hold_low
-//! * release_low
-//!
-//! Author
-//! -------------------
-//!
-//! * Author: Jay Kickliter
-//! * Date: Sep 10, 2017
-
 use core::cell::Cell;
-use core::{cmp, ptr};
-use kernel::hil;
-use kernel::hil::gpio::Configure;
-use kernel::hil::spi::cs::ChipSelectPolar;
-use kernel::utilities::cells::{MapCell, OptionalCell, VolatileCell};
+use core::cmp;
+use kernel::utilities::cells::MapCell;
 use kernel::utilities::leasable_buffer::SubSliceMut;
-use kernel::utilities::registers::interfaces::{ReadWriteable, Readable, Writeable};
-use kernel::utilities::registers::{register_bitfields, ReadWrite, WriteOnly};
-use kernel::utilities::StaticRef;
 use kernel::ErrorCode;
-use crate::pinmux::Pinmux;
 
-const INSTANCES: [StaticRef<SpimRegisters>; 3] = unsafe {
-    [
-        StaticRef::new(0x40003000 as *const SpimRegisters),
-        StaticRef::new(0x40004000 as *const SpimRegisters),
-        StaticRef::new(0x40023000 as *const SpimRegisters),
-    ]
-};
+use kernel::hil;
+use kernel::hil::spi::{self, ClockPhase, ClockPolarity, SpiMasterClient};
+use kernel::platform::chip::ClockInterface;
+use kernel::utilities::cells::OptionalCell;
+use kernel::utilities::registers::interfaces::{ReadWriteable, Readable, Writeable};
+use kernel::utilities::registers::{register_bitfields, ReadOnly, ReadWrite};
+use kernel::utilities::StaticRef;
 
+use crate::rcc;
+
+const SPI_READ_IN_PROGRESS: u8 = 0b001;
+const SPI_WRITE_IN_PROGRESS: u8 = 0b010;
+const SPI_IN_PROGRESS: u8 = 0b100;
+const SPI_IDLE: u8 = 0b000;
+
+/// Serial peripheral interface
 #[repr(C)]
-struct SpimRegisters {
-    _reserved0: [u8; 16],                            // reserved
-    tasks_start: WriteOnly<u32, TASK::Register>,     // Start SPI transaction
-    tasks_stop: WriteOnly<u32, TASK::Register>,      // Stop SPI transaction
-    _reserved1: [u8; 4],                             // reserved
-    tasks_suspend: WriteOnly<u32, TASK::Register>,   // Suspend SPI transaction
-    tasks_resume: WriteOnly<u32, TASK::Register>,    // Resume SPI transaction
-    _reserved2: [u8; 224],                           // reserved
-    events_stopped: ReadWrite<u32, EVENT::Register>, // SPI transaction has stopped
-    _reserved3: [u8; 8],                             // reserved
-    events_endrx: ReadWrite<u32, EVENT::Register>,   // End of RXD buffer reached
-    _reserved4: [u8; 4],                             // reserved
-    events_end: ReadWrite<u32, EVENT::Register>,     // End of RXD buffer and TXD buffer reached
-    _reserved5: [u8; 4],                             // reserved
-    events_endtx: ReadWrite<u32, EVENT::Register>,   // End of TXD buffer reached
-    _reserved6: [u8; 40],                            // reserved
-    events_started: ReadWrite<u32, EVENT::Register>, // Transaction started
-    _reserved7: [u8; 176],                           // reserved
-    shorts: ReadWrite<u32>,                          // Shortcut register
-    _reserved8: [u8; 256],                           // reserved
-    intenset: ReadWrite<u32, INTE::Register>,        // Enable interrupt
-    intenclr: ReadWrite<u32, INTE::Register>,        // Disable interrupt
-    _reserved9: [u8; 500],                           // reserved
-    enable: ReadWrite<u32, ENABLE::Register>,        // Enable SPIM
-    _reserved10: [u8; 4],                            // reserved
-    psel_sck: VolatileCell<Pinmux>,                  // Pin select for SCK
-    psel_mosi: VolatileCell<Pinmux>,                 // Pin select for MOSI signal
-    psel_miso: VolatileCell<Pinmux>,                 // Pin select for MISO signal
-    _reserved11: [u8; 16],                           // reserved
-    frequency: ReadWrite<u32>,                       // SPI frequency
-    _reserved12: [u8; 12],                           // reserved
-    rxd_ptr: VolatileCell<*mut u8>,                  // Data pointer
-    rxd_maxcnt: ReadWrite<u32, MAXCNT::Register>,    // Maximum number of bytes in receive buffer
-    rxd_amount: ReadWrite<u32>,                      // Number of bytes transferred
-    rxd_list: ReadWrite<u32>,                        // EasyDMA list type
-    txd_ptr: VolatileCell<*const u8>,                // Data pointer
-    txd_maxcnt: ReadWrite<u32, MAXCNT::Register>,    // Maximum number of bytes in transmit buffer
-    txd_amount: ReadWrite<u32>,                      // Number of bytes transferred
-    txd_list: ReadWrite<u32>,                        // EasyDMA list type
-    config: ReadWrite<u32, CONFIG::Register>,        // Configuration register
-    _reserved13: [u8; 104],                          // reserved
-    orc: ReadWrite<u32>,                             // Over-read character.
+struct SpiRegisters {
+    /// control register 1
+    cr1: ReadWrite<u32, CR1::Register>,
+    /// control register 2
+    cr2: ReadWrite<u32, CR2::Register>,
+    /// status register
+    sr: ReadWrite<u32, SR::Register>,
+    // this should be _reserved: [u8; 3], but it does not work,
+    // packing is correct, but writing to the data register does not work
+    // leaving it commented out until an upgrade to packed data is written
+    /// data register
+    dr: ReadWrite<u8, DR::Register>,
+    /// CRC polynomial register
+    crcpr: ReadWrite<u32, CRCPR::Register>,
+    /// RX CRC register
+    rxcrcr: ReadOnly<u32, RXCRCR::Register>,
+    /// TX CRC register
+    txcrcr: ReadOnly<u32, TXCRCR::Register>,
+    /// I2S configuration register
+    i2scfgr: ReadWrite<u32, I2SCFGR::Register>,
+    /// I2S prescaler register
+    i2spr: ReadWrite<u32, I2SPR::Register>,
 }
 
-register_bitfields![u32,
-    INTE [
-        /// Write '1' to Enable interrupt on EVENTS_STOPPED event
-        STOPPED OFFSET(1) NUMBITS(1) [
-            /// Read: Disabled
-            ReadDisabled = 0,
-            /// Enable
-            Enable = 1
-        ],
-        /// Write '1' to Enable interrupt on EVENTS_ENDRX event
-        ENDRX OFFSET(4) NUMBITS(1) [
-            /// Read: Disabled
-            ReadDisabled = 0,
-            /// Enable
-            Enable = 1
-        ],
-        /// Write '1' to Enable interrupt on EVENTS_END event
-        END OFFSET(6) NUMBITS(1) [
-            /// Read: Disabled
-            ReadDisabled = 0,
-            /// Enable
-            Enable = 1
-        ],
-        /// Write '1' to Enable interrupt on EVENTS_ENDTX event
-        ENDTX OFFSET(8) NUMBITS(1) [
-            /// Read: Disabled
-            ReadDisabled = 0,
-            /// Enable
-            Enable = 1
-        ],
-        /// Write '1' to Enable interrupt on EVENTS_STARTED event
-        STARTED OFFSET(19) NUMBITS(1) [
-            /// Read: Disabled
-            ReadDisabled = 0,
-            /// Enable
-            Enable = 1
-        ]
-    ],
-    MAXCNT [
-        /// Maximum number of bytes in buffer
-        MAXCNT OFFSET(0) NUMBITS(16)
-    ],
-    CONFIG [
-        /// Bit order
-        ORDER OFFSET(0) NUMBITS(1) [
-            /// Most significant bit shifted out first
-            MostSignificantBitShiftedOutFirst = 0,
-            /// Least significant bit shifted out first
-            LeastSignificantBitShiftedOutFirst = 1
-        ],
-        /// Serial clock (SCK) phase
-        CPHA OFFSET(1) NUMBITS(1) [
-            /// Sample on leading edge of clock, shift serial data on trailing edge
-            SampleOnLeadingEdge = 0,
-            /// Sample on trailing edge of clock, shift serial data on leading edge
-            SampleOnTrailingEdge = 1
-        ],
-        /// Serial clock (SCK) polarity
-        CPOL OFFSET(2) NUMBITS(1) [
-            /// Active high
-            ActiveHigh = 0,
-            /// Active low
-            ActiveLow = 1
-        ]
-    ],
-    ENABLE [
-        ENABLE OFFSET(0) NUMBITS(4) [
-            Disable = 0,
-            Enable = 7
-        ]
-    ],
-    EVENT [
-        EVENT 0
-    ],
-    TASK [
-        TASK 0
+register_bitfields![u8,
+    DR [
+        /// 8-bit data register
+        DR OFFSET(0) NUMBITS(8) []
     ]
 ];
 
-/// An enum representing all allowable `frequency` register values.
-#[repr(u32)]
-#[derive(Copy, Clone)]
-pub enum Frequency {
-    K125 = 0x02000000,
-    K250 = 0x04000000,
-    K500 = 0x08000000,
-    M1 = 0x10000000,
-    M2 = 0x20000000,
-    M4 = 0x40000000,
-    M8 = 0x80000000,
+register_bitfields![u32,
+    CR1 [
+        /// Bidirectional data mode enable
+        BIDIMODE OFFSET(15) NUMBITS(1) [],
+        /// Output enable in bidirectional mode
+        BIDIOE OFFSET(14) NUMBITS(1) [],
+        /// Hardware CRC calculation enable
+        CRCEN OFFSET(13) NUMBITS(1) [],
+        /// CRC transfer next
+        CRCNEXT OFFSET(12) NUMBITS(1) [],
+        /// CRC length
+        CRCL OFFSET(11) NUMBITS(1) [],
+        /// Receive only
+        RXONLY OFFSET(10) NUMBITS(1) [],
+        /// Software slave management
+        SSM OFFSET(9) NUMBITS(1) [],
+        /// Internal slave select
+        SSI OFFSET(8) NUMBITS(1) [],
+        /// Frame format
+        LSBFIRST OFFSET(7) NUMBITS(1) [],
+        /// SPI enable
+        SPE OFFSET(6) NUMBITS(1) [],
+        /// Baud rate control
+        BR OFFSET(3) NUMBITS(3) [],
+        /// Master selection
+        MSTR OFFSET(2) NUMBITS(1) [],
+        /// Clock polarity
+        CPOL OFFSET(1) NUMBITS(1) [],
+        /// Clock phase
+        CPHA OFFSET(0) NUMBITS(1) []
+    ],
+    CR2 [
+        /// Last DMA transfer for transmission
+        LDMA_TX OFFSET(14) NUMBITS(1) [],
+        /// Last DMA transfer for reception
+        LDMA_RX OFFSET(13) NUMBITS(1) [],
+        /// FIFO reception threshold
+        FRXTH OFFSET(12) NUMBITS(1) [],
+        /// Data size
+        DS OFFSET(8) NUMBITS(4) [],
+        /// Tx buffer empty interrupt enable
+        TXEIE OFFSET(7) NUMBITS(1) [],
+        /// RX buffer not empty interrupt enable
+        RXNEIE OFFSET(6) NUMBITS(1) [],
+        /// Error interrupt enable
+        ERRIE OFFSET(5) NUMBITS(1) [],
+        /// Frame format
+        FRF OFFSET(4) NUMBITS(1) [],
+        /// NSS pulse management
+        NSS OFFSET(3) NUMBITS(1) [],
+        /// SS output enable
+        SSOE OFFSET(2) NUMBITS(1) [],
+        /// Tx buffer DMA enable
+        TXDMAEN OFFSET(1) NUMBITS(1) [],
+        /// Rx buffer DMA enable
+        RXDMAEN OFFSET(0) NUMBITS(1) []
+    ],
+    SR [
+        /// FIFO transmission level
+        FTLVL OFFSET(11) NUMBITS(2) [],
+        /// FIFO reception level
+        FRLVL OFFSET(9) NUMBITS(2) [],
+        /// TI frame format error
+        FRE OFFSET(8) NUMBITS(1) [],
+        /// Busy flag
+        BSY OFFSET(7) NUMBITS(1) [],
+        /// Overrun flag
+        OVR OFFSET(6) NUMBITS(1) [],
+        /// Mode fault
+        MODF OFFSET(5) NUMBITS(1) [],
+        /// CRC error flag
+        CRCERR OFFSET(4) NUMBITS(1) [],
+        /// Underrun flag
+        UDR OFFSET(3) NUMBITS(1) [],
+        /// Channel side
+        CHSIDE OFFSET(2) NUMBITS(1) [],
+        /// Transmit buffer empty
+        TXE OFFSET(1) NUMBITS(1) [],
+        /// Receive buffer not empty
+        RXNE OFFSET(0) NUMBITS(1) []
+    ],
+    CRCPR [
+        /// CRC polynomial register
+        CRCPOLY OFFSET(0) NUMBITS(16) []
+    ],
+    RXCRCR [
+        /// Rx CRC register
+        RXCRC OFFSET(0) NUMBITS(16) []
+    ],
+    TXCRCR [
+        /// Tx CRC register
+        TXCRC OFFSET(0) NUMBITS(16) []
+    ],
+    I2SCFGR [
+        /// I2S mode selection
+        I2SMOD OFFSET(11) NUMBITS(1) [],
+        /// I2S Enable
+        I2SE OFFSET(10) NUMBITS(1) [],
+        /// I2S configuration mode
+        I2SCFG OFFSET(8) NUMBITS(2) [],
+        /// PCM frame synchronization
+        PCMSYNC OFFSET(7) NUMBITS(1) [],
+        /// I2S standard selection
+        I2SSTD OFFSET(4) NUMBITS(2) [],
+        /// Steady state clock polarity
+        CKPOL OFFSET(3) NUMBITS(1) [],
+        /// Data length to be transferred
+        DATLEN OFFSET(1) NUMBITS(2) [],
+        /// Channel length (number of bits per audio channel)
+        CHLEN OFFSET(0) NUMBITS(1) []
+    ],
+    I2SPR [
+        /// Master clock output enable
+        MCKOE OFFSET(9) NUMBITS(1) [],
+        /// Odd factor for the prescaler
+        ODD OFFSET(8) NUMBITS(1) [],
+        /// I2S Linear prescaler
+        I2SDIV OFFSET(0) NUMBITS(8) []
+    ]
+];
+
+const SPI1_BASE: StaticRef<SpiRegisters> =
+    unsafe { StaticRef::new(0x4001_3000 as *const SpiRegisters) };
+
+// const SPI2_BASE: StaticRef<SpiRegisters> =
+//     unsafe { StaticRef::new(0x4000_3800 as *const SpiRegisters) };
+
+// const SPI3_BASE: StaticRef<SpiRegisters> =
+//     unsafe { StaticRef::new(0x4000_3C00 as *const SpiRegisters) };
+
+pub struct Spi<'a> {
+    registers: StaticRef<SpiRegisters>,
+    clock: SpiClock<'a>,
+
+    // SPI slave support not yet implemented
+    master_client: OptionalCell<&'a dyn hil::spi::SpiMasterClient>,
+
+    active_slave: OptionalCell<spi::cs::ChipSelectPolar<'a, crate::gpio::Pin<'a>>>,
+
+    tx_buffer: MapCell<SubSliceMut<'static, u8>>,
+    tx_position: Cell<usize>,
+
+    rx_buffer: MapCell<SubSliceMut<'static, u8>>,
+    rx_position: Cell<usize>,
+    len: Cell<usize>,
+
+    transfers: Cell<u8>,
+
+    active_after: Cell<bool>,
 }
 
-impl Frequency {
-    pub fn from_register(reg: u32) -> Option<Frequency> {
-        match reg {
-            0x02000000 => Some(Frequency::K125),
-            0x04000000 => Some(Frequency::K250),
-            0x08000000 => Some(Frequency::K500),
-            0x10000000 => Some(Frequency::M1),
-            0x20000000 => Some(Frequency::M2),
-            0x40000000 => Some(Frequency::M4),
-            0x80000000 => Some(Frequency::M8),
-            _ => None,
+impl<'a> Spi<'a> {
+    fn new(base_addr: StaticRef<SpiRegisters>, clock: SpiClock<'a>) -> Self {
+        Self {
+            registers: base_addr,
+            clock,
+
+            master_client: OptionalCell::empty(),
+            active_slave: OptionalCell::empty(),
+
+            tx_buffer: MapCell::empty(),
+            tx_position: Cell::new(0),
+
+            rx_buffer: MapCell::empty(),
+            rx_position: Cell::new(0),
+
+            len: Cell::new(0),
+
+            transfers: Cell::new(SPI_IDLE),
+
+            active_after: Cell::new(false),
         }
     }
 
-    pub fn into_spi_rate(&self) -> u32 {
-        match *self {
-            Frequency::K125 => 125_000,
-            Frequency::K250 => 250_000,
-            Frequency::K500 => 500_000,
-            Frequency::M1 => 1_000_000,
-            Frequency::M2 => 2_000_000,
-            Frequency::M4 => 4_000_000,
-            Frequency::M8 => 8_000_000,
-        }
+    pub fn new_spi1(rcc: &'a rcc::Rcc) -> Self {
+        Self::new(
+            SPI1_BASE,
+            SpiClock(rcc::PeripheralClock::new(
+                rcc::PeripheralClockType::APB2(rcc::PCLK2::SPI1),
+                rcc,
+            )),
+        )
     }
 
-    pub fn from_spi_rate(freq: u32) -> Frequency {
-        if freq < 250_000 {
-            Frequency::K125
-        } else if freq < 500_000 {
-            Frequency::K250
-        } else if freq < 1_000_000 {
-            Frequency::K500
-        } else if freq < 2_000_000 {
-            Frequency::M1
-        } else if freq < 4_000_000 {
-            Frequency::M2
-        } else if freq < 8_000_000 {
-            Frequency::M4
-        } else {
-            Frequency::M8
-        }
-    }
-}
-
-/// A SPI master device.
-///
-/// A `SPIM` instance wraps a `registers::spim::SPIM` together with
-/// addition data necessary to implement an asynchronous interface.
-pub struct SPIM<'a> {
-    registers: StaticRef<SpimRegisters>,
-    client: OptionalCell<&'a dyn hil::spi::SpiMasterClient>,
-    chip_select: OptionalCell<ChipSelectPolar<'a, crate::gpio::GPIOPin<'a>>>,
-    busy: Cell<bool>,
-    tx_buf: MapCell<SubSliceMut<'static, u8>>,
-    rx_buf: MapCell<SubSliceMut<'static, u8>>,
-    transfer_len: Cell<usize>,
-}
-
-impl<'a> SPIM<'a> {
-    pub const fn new(instance: usize) -> SPIM<'a> {
-        SPIM {
-            registers: INSTANCES[instance],
-            client: OptionalCell::empty(),
-            chip_select: OptionalCell::empty(),
-            busy: Cell::new(false),
-            tx_buf: MapCell::empty(),
-            rx_buf: MapCell::empty(),
-            transfer_len: Cell::new(0),
-        }
+    pub fn is_enabled_clock(&self) -> bool {
+        self.clock.is_enabled()
     }
 
-    #[inline(never)]
+    pub fn enable_clock(&self) {
+        self.clock.enable();
+    }
+
+    pub fn disable_clock(&self) {
+        self.clock.disable();
+    }
+
     pub fn handle_interrupt(&self) {
-        if self.registers.events_end.is_set(EVENT::EVENT) {
-            // End of RXD buffer and TXD buffer reached
+        if self.registers.sr.is_set(SR::TXE) {
+            if self.tx_buffer.is_some() && self.tx_position.get() < self.len.get() {
+                self.tx_buffer.map(|buf| {
+                    self.registers
+                        .dr
+                        .write(DR::DR.val(buf[self.tx_position.get()]));
+                    self.tx_position.set(self.tx_position.get() + 1);
+                });
+            } else {
+                self.registers.cr2.modify(CR2::TXEIE::CLEAR);
+                self.transfers
+                    .set(self.transfers.get() & !SPI_WRITE_IN_PROGRESS);
+            }
+        }
 
-            if self.chip_select.is_none() {
-                debug_assert!(false, "Invariant violated. Chip-select must be Some.");
-                return;
+        if self.registers.sr.is_set(SR::RXNE) {
+            while self.registers.sr.read(SR::FRLVL) > 0 {
+                let byte = self.registers.dr.read(DR::DR);
+                if self.rx_buffer.is_some() && self.rx_position.get() < self.len.get() {
+                    self.rx_buffer.map(|buf| {
+                        buf[self.rx_position.get()] = byte;
+                    });
+                }
+                self.rx_position.set(self.rx_position.get() + 1);
             }
 
-            self.chip_select.map(|cs| cs.deactivate());
-            self.registers.events_end.write(EVENT::EVENT::CLEAR);
+            if self.rx_position.get() >= self.len.get() {
+                self.transfers
+                    .set(self.transfers.get() & !SPI_READ_IN_PROGRESS);
+            }
+        }
 
-            // When we are no longer active or busy we can disable the
-            // peripheral.
-            self.disable();
-            self.busy.set(false);
-
-            self.client.map(|client| match self.tx_buf.take() {
-                None => (),
-                Some(tx_buf) => {
-                    client.read_write_done(tx_buf, self.rx_buf.take(), Ok(self.transfer_len.get()))
-                }
+        if self.transfers.get() == SPI_IN_PROGRESS {
+            // we release the line and put the SPI in IDLE as the client might
+            // initiate another SPI transfer right away
+            if !self.active_after.get() {
+                self.active_slave.map(|p| {
+                    p.deactivate();
+                });
+            }
+            self.transfers.set(SPI_IDLE);
+            self.master_client.map(|client| {
+                self.tx_buffer.take().map(|buf| {
+                    client.read_write_done(buf, self.rx_buffer.take(), Ok(self.len.get()))
+                })
             });
-        }
-
-        // Although we only configured the chip interrupt on the
-        // above 'end' event, the other event fields also get set by
-        // the chip. Let's clear those flags.
-
-        if self.registers.events_stopped.is_set(EVENT::EVENT) {
-            // SPI transaction has stopped
-            self.registers.events_stopped.write(EVENT::EVENT::CLEAR);
-        }
-
-        if self.registers.events_endrx.is_set(EVENT::EVENT) {
-            // End of RXD buffer reached
-            self.registers.events_endrx.write(EVENT::EVENT::CLEAR);
-        }
-
-        if self.registers.events_endtx.is_set(EVENT::EVENT) {
-            // End of TXD buffer reached
-            self.registers.events_endtx.write(EVENT::EVENT::CLEAR);
-        }
-
-        if self.registers.events_started.is_set(EVENT::EVENT) {
-            // Transaction started
-            self.registers.events_started.write(EVENT::EVENT::CLEAR);
+            self.transfers.set(SPI_IDLE);
         }
     }
 
-    /// Configures an already constructed `SPIM`.
-    pub fn configure(&self, mosi: Pinmux, miso: Pinmux, sck: Pinmux) {
-        self.registers.psel_mosi.set(mosi);
-        self.registers.psel_miso.set(miso);
-        self.registers.psel_sck.set(sck);
+    fn set_cr<F>(&self, f: F)
+    where
+        F: FnOnce(),
+    {
+        self.registers.cr1.modify(CR1::SPE::CLEAR);
+        f();
+        self.registers.cr1.modify(CR1::SPE::SET);
     }
 
-    /// Enables `SPIM` peripheral.
-    pub fn enable(&self) {
-        self.registers.enable.write(ENABLE::ENABLE::Enable);
+    // IdleLow  = CPOL = 0
+    // IdleHigh = CPOL = 1
+    fn set_polarity(&self, polarity: ClockPolarity) {
+        self.set_cr(|| match polarity {
+            ClockPolarity::IdleLow => self.registers.cr1.modify(CR1::CPOL::CLEAR),
+            ClockPolarity::IdleHigh => self.registers.cr1.modify(CR1::CPOL::SET),
+        });
     }
 
-    /// Disables `SPIM` peripheral.
-    pub fn disable(&self) {
-        self.registers.enable.write(ENABLE::ENABLE::Disable);
+    fn get_polarity(&self) -> ClockPolarity {
+        if !self.registers.cr1.is_set(CR1::CPOL) {
+            ClockPolarity::IdleLow
+        } else {
+            ClockPolarity::IdleHigh
+        }
     }
 
-    pub fn is_enabled(&self) -> bool {
-        self.registers.enable.matches_all(ENABLE::ENABLE::Enable)
-    }
-}
-
-impl<'a> hil::spi::SpiMaster<'a> for SPIM<'a> {
-    type ChipSelect = ChipSelectPolar<'a, crate::gpio::GPIOPin<'a>>;
-
-    fn set_client(&self, client: &'a dyn hil::spi::SpiMasterClient) {
-        self.client.set(client);
+    // SampleLeading  = CPHA = 0
+    // SampleTrailing = CPHA = 1
+    fn set_phase(&self, phase: ClockPhase) {
+        self.set_cr(|| match phase {
+            ClockPhase::SampleLeading => self.registers.cr1.modify(CR1::CPHA::CLEAR),
+            ClockPhase::SampleTrailing => self.registers.cr1.modify(CR1::CPHA::SET),
+        });
     }
 
-    fn init(&self) -> Result<(), ErrorCode> {
-        Ok(())
-    }
-
-    fn is_busy(&self) -> bool {
-        self.busy.get()
+    fn get_phase(&self) -> ClockPhase {
+        if !self.registers.cr1.is_set(CR1::CPHA) {
+            ClockPhase::SampleLeading
+        } else {
+            ClockPhase::SampleTrailing
+        }
     }
 
     fn read_write_bytes(
         &self,
-        tx_buf: SubSliceMut<'static, u8>,
-        rx_buf: Option<SubSliceMut<'static, u8>>,
+        write_buffer: SubSliceMut<'static, u8>,
+        read_buffer: Option<SubSliceMut<'static, u8>>,
     ) -> Result<
         (),
         (
@@ -363,129 +358,195 @@ impl<'a> hil::spi::SpiMaster<'a> for SPIM<'a> {
             Option<SubSliceMut<'static, u8>>,
         ),
     > {
-        debug_assert!(!self.busy.get());
-        debug_assert!(self.tx_buf.is_none());
-        debug_assert!(self.rx_buf.is_none());
+        if self.transfers.get() == 0 {
+            self.registers.cr2.modify(CR2::RXNEIE::CLEAR);
+            self.active_slave.map(|p| {
+                p.activate();
+            });
 
-        // Clear (set to low) chip-select
-        if self.chip_select.is_none() {
-            return Err((ErrorCode::NODEVICE, tx_buf, rx_buf));
-        }
-        self.chip_select.map(|cs| cs.activate());
+            self.transfers.set(self.transfers.get() | SPI_IN_PROGRESS);
 
-        // Setup transmit data registers
-        let tx_len: u32 = tx_buf.len() as u32;
-        self.registers.txd_ptr.set(tx_buf.as_ptr());
-        self.registers.txd_maxcnt.write(MAXCNT::MAXCNT.val(tx_len));
-        self.tx_buf.replace(tx_buf);
+            let mut count: usize = write_buffer.len();
+            read_buffer
+                .as_ref()
+                .map(|buf| count = cmp::min(count, buf.len()));
 
-        // Setup receive data registers
-        match rx_buf {
-            None => {
-                self.registers.rxd_ptr.set(ptr::null_mut());
-                self.registers.rxd_maxcnt.write(MAXCNT::MAXCNT.val(0));
-                self.transfer_len.set(tx_len as usize);
-                self.rx_buf.take();
+            self.transfers
+                .set(self.transfers.get() | SPI_WRITE_IN_PROGRESS);
+
+            if read_buffer.is_some() {
+                self.transfers
+                    .set(self.transfers.get() | SPI_READ_IN_PROGRESS);
             }
-            Some(mut buf) => {
-                self.registers.rxd_ptr.set(buf.as_mut_ptr());
-                let rx_len: u32 = buf.len() as u32;
-                self.registers.rxd_maxcnt.write(MAXCNT::MAXCNT.val(rx_len));
-                self.transfer_len.set(cmp::min(tx_len, rx_len) as usize);
-                self.rx_buf.put(buf);
-            }
+
+            self.rx_position.set(0);
+
+            read_buffer.map(|buf| {
+                self.rx_buffer.replace(buf);
+                self.len.set(count);
+            });
+
+            self.registers.cr2.modify(CR2::RXNEIE::SET);
+
+            self.tx_buffer.replace(write_buffer);
+            self.len.set(count);
+            self.tx_position.set(0);
+            self.registers.cr2.modify(CR2::TXEIE::SET);
+
+            Ok(())
+        } else {
+            Err((ErrorCode::BUSY, write_buffer, read_buffer))
         }
+    }
+}
 
-        // Start the transfer
-        self.busy.set(true);
+impl<'a> spi::SpiMaster<'a> for Spi<'a> {
+    type ChipSelect = spi::cs::ChipSelectPolar<'a, crate::gpio::Pin<'a>>;
 
-        // Start and enable the SPIM peripheral. The SPIM peripheral is only
-        // enabled when the busy flag is set.
-        self.registers.intenset.write(INTE::END::Enable);
-        self.enable();
+    fn set_client(&self, client: &'a dyn SpiMasterClient) {
+        self.master_client.set(client);
+    }
 
-        self.registers.tasks_start.write(TASK::TASK::SET);
+    fn init(&self) -> Result<(), ErrorCode> {
+        // enable error interrupt (used only for debugging)
+        // self.registers.cr2.modify(CR2::ERRIE::SET);
+
+        // Set 8 bit mode
+        // Set FIFO level at 1/4
+        self.registers
+            .cr2
+            .modify(CR2::DS.val(0b0111) + CR2::FRXTH::SET);
+
+        // 2 line unidirectional mode
+        // Select as master
+        // Software slave management
+        // Enable
+        self.registers.cr1.modify(
+            CR1::BIDIMODE::CLEAR + CR1::MSTR::SET + CR1::SSM::SET + CR1::SSI::SET + CR1::SPE::SET,
+        );
         Ok(())
     }
 
-    fn write_byte(&self, _val: u8) -> Result<(), ErrorCode> {
-        unimplemented!("SPI: Use `read_write_bytes()` instead.");
+    fn is_busy(&self) -> bool {
+        self.registers.sr.is_set(SR::BSY)
+    }
+
+    fn write_byte(&self, out_byte: u8) -> Result<(), ErrorCode> {
+        // debug! ("spi write byte {}", out_byte);
+        // loop till TXE (Transmit Buffer Empty) becomes 1
+        while !self.registers.sr.is_set(SR::TXE) {}
+
+        self.registers.dr.modify(DR::DR.val(out_byte));
+        Ok(())
     }
 
     fn read_byte(&self) -> Result<u8, ErrorCode> {
-        unimplemented!("SPI: Use `read_write_bytes()` instead.");
+        self.read_write_byte(0)
     }
 
-    fn read_write_byte(&self, _val: u8) -> Result<u8, ErrorCode> {
-        unimplemented!("SPI: Use `read_write_bytes()` instead.");
+    fn read_write_byte(&self, val: u8) -> Result<u8, ErrorCode> {
+        self.write_byte(val)?;
+        // loop till RXNE becomes 1
+        while !self.registers.sr.is_set(SR::RXNE) {}
+        Ok(self.registers.dr.read(DR::DR))
     }
 
-    // Tell the SPI peripheral what to use as a chip select pin.
-    // The type of the argument is based on what makes sense for the
-    // peripheral when this trait is implemented.
-    fn specify_chip_select(&self, cs: Self::ChipSelect) -> Result<(), ErrorCode> {
-        cs.pin.make_output();
-        cs.deactivate();
-        self.chip_select.set(cs);
-        Ok(())
+    fn read_write_bytes(
+        &self,
+        write_buffer: SubSliceMut<'static, u8>,
+        read_buffer: Option<SubSliceMut<'static, u8>>,
+    ) -> Result<
+        (),
+        (
+            ErrorCode,
+            SubSliceMut<'static, u8>,
+            Option<SubSliceMut<'static, u8>>,
+        ),
+    > {
+        // If busy, don't start
+        if self.is_busy() {
+            return Err((ErrorCode::BUSY, write_buffer, read_buffer));
+        }
+
+        if let Err((err, write_buffer, read_buffer)) =
+            self.read_write_bytes(write_buffer, read_buffer)
+        {
+            Err((err, write_buffer, read_buffer))
+        } else {
+            Ok(())
+        }
     }
 
-    // Returns the actual rate set
+    /// We *only* support 1Mhz. If `rate` is set to any value other than
+    /// `1_000_000`, then return INVAL
     fn set_rate(&self, rate: u32) -> Result<u32, ErrorCode> {
-        let f = Frequency::from_spi_rate(rate);
-        self.registers.frequency.set(f as u32);
-        Ok(f.into_spi_rate())
+        // debug! ("stm32f3 spi set rate");
+        if rate != 1_000_000 {
+            return Err(ErrorCode::INVAL);
+        }
+
+        self.set_cr(|| {
+            // HSI is 8Mhz and Fpclk is also 8Mhz. 0b010 is Fpclk / 8
+            self.registers.cr1.modify(CR1::BR.val(0b010));
+        });
+
+        Ok(1_000_000)
     }
 
+    /// We *only* support 1Mhz. If we need to return any other value other than
+    /// `1_000_000`, then this function panics
     fn get_rate(&self) -> u32 {
-        // Reset value is a valid frequency (250kbps), so .expect
-        // should be safe here
-        let f = Frequency::from_register(self.registers.frequency.get()).unwrap(); // Unwrap fail = nrf52 unknown spi rate
-        f.into_spi_rate()
+        if self.registers.cr1.read(CR1::BR) != 0b010 {
+            panic!("rate not set to 1_000_000");
+        }
+
+        1_000_000
     }
 
-    fn set_polarity(&self, polarity: hil::spi::ClockPolarity) -> Result<(), ErrorCode> {
-        let new_polarity = match polarity {
-            hil::spi::ClockPolarity::IdleLow => CONFIG::CPOL::ActiveHigh,
-            hil::spi::ClockPolarity::IdleHigh => CONFIG::CPOL::ActiveLow,
-        };
-        self.registers.config.modify(new_polarity);
+    fn set_polarity(&self, polarity: ClockPolarity) -> Result<(), ErrorCode> {
+        self.set_polarity(polarity);
         Ok(())
     }
 
-    fn get_polarity(&self) -> hil::spi::ClockPolarity {
-        match self.registers.config.read(CONFIG::CPOL) {
-            0 => hil::spi::ClockPolarity::IdleLow,
-            1 => hil::spi::ClockPolarity::IdleHigh,
-            _ => unreachable!(),
-        }
+    fn get_polarity(&self) -> ClockPolarity {
+        self.get_polarity()
     }
 
-    fn set_phase(&self, phase: hil::spi::ClockPhase) -> Result<(), ErrorCode> {
-        let new_phase = match phase {
-            hil::spi::ClockPhase::SampleLeading => CONFIG::CPHA::SampleOnLeadingEdge,
-            hil::spi::ClockPhase::SampleTrailing => CONFIG::CPHA::SampleOnTrailingEdge,
-        };
-        self.registers.config.modify(new_phase);
+    fn set_phase(&self, phase: ClockPhase) -> Result<(), ErrorCode> {
+        self.set_phase(phase);
         Ok(())
     }
 
-    fn get_phase(&self) -> hil::spi::ClockPhase {
-        match self.registers.config.read(CONFIG::CPHA) {
-            0 => hil::spi::ClockPhase::SampleLeading,
-            1 => hil::spi::ClockPhase::SampleTrailing,
-            _ => unreachable!(),
-        }
+    fn get_phase(&self) -> ClockPhase {
+        self.get_phase()
     }
 
-    // The following two trait functions are not implemented for
-    // SAM4L, and appear to not provide much functionality. Let's not
-    // bother implementing them unless needed.
     fn hold_low(&self) {
-        unimplemented!("SPI: Use `read_write_bytes()` instead.");
+        self.active_after.set(true);
     }
 
     fn release_low(&self) {
-        unimplemented!("SPI: Use `read_write_bytes()` instead.");
+        self.active_after.set(false);
+    }
+
+    fn specify_chip_select(&self, cs: Self::ChipSelect) -> Result<(), ErrorCode> {
+        self.active_slave.set(cs);
+        Ok(())
+    }
+}
+
+struct SpiClock<'a>(rcc::PeripheralClock<'a>);
+
+impl ClockInterface for SpiClock<'_> {
+    fn is_enabled(&self) -> bool {
+        self.0.is_enabled()
+    }
+
+    fn enable(&self) {
+        self.0.enable();
+    }
+
+    fn disable(&self) {
+        self.0.disable();
     }
 }

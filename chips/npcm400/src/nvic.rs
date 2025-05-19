@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 // Copyright Tock Contributors 2022.
 
+//! Named constants for NVIC ids
+
+// #![allow(non_upper_case_globals)]
+
 pub const SMB2: u32 = 0;
 pub const _RESERVED1: u32 = 1;
 pub const _RESERVED2: u32 = 2;

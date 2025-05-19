@@ -9,6 +9,7 @@ include ../Makefile.common
 
 OPENOCD=openocd
 POST_BUILD_SCRIPT=$(TOCK_ROOT_DIRECTORY)boards/npcm400f/esiost/esiost.py
+SIGNED_IMG_PATH=$(TARGET_PATH)/release/$(PLATFORM)_sign.bin
 
 # Default target for installing the kernel.
 .PHONY: install
@@ -31,4 +32,4 @@ sign:
 	@echo ">> Building the kernel"
 	make
 	@echo ">> Signing the binary"
-	${PYTHON_EXECUTABLE} $(POST_BUILD_SCRIPT) -i $(TARGET_PATH)/release/$(PLATFORM).bin -o $(TARGET_PATH)/release/$(PLATFORM)_sign.bin -v
+	${PYTHON_EXECUTABLE} $(POST_BUILD_SCRIPT) -i $(TARGET_PATH)/release/$(PLATFORM).bin -o $(SIGNED_IMG_PATH) -v

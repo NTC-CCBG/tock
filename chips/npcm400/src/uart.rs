@@ -115,22 +115,20 @@ register_bitfields! [u8,
     ]
 ];
 
+const TX_FIFO_SIZE: u8 = 16;
+
 /// UART1
 // It should never be instanced outside this module but because a static mutable reference to it
 // is exported outside this module it must be `pub`
-pub struct Uart1<'a> {
+pub struct Uart<'a> {
     registers: StaticRef<UarteRegisters>,
     tx_client: OptionalCell<&'a dyn uart::TransmitClient>,
     tx_buffer: kernel::utilities::cells::TakeCell<'static, [u8]>,
     tx_len: Cell<usize>,
-    tx_remaining_bytes: Cell<usize>,
     rx_client: OptionalCell<&'a dyn uart::ReceiveClient>,
     rx_buffer: kernel::utilities::cells::TakeCell<'static, [u8]>,
     rx_len: Cell<usize>,
-    rx_remaining_bytes: Cell<usize>,
-    // rx_abort_in_progress: Cell<bool>,
-    // offset: Cell<usize>,
-    // pub src_freq: u32,
+    src_freq: u32,
 }
 
 #[derive(Copy, Clone)]
@@ -138,29 +136,29 @@ pub struct UARTParams {
     pub baud_rate: u32,
 }
 
-impl<'a> Uart1<'a> {
+impl<'a> Uart<'a> {
     /// Constructor
     // This should only be constructed once
-    pub const fn new(regs: StaticRef<UarteRegisters>) -> Uart1<'a> {
-        Uart1 {
+    fn new(regs: StaticRef<UarteRegisters>, src: u32) -> Uart<'a> {
+        Uart {
             registers: regs,
             tx_client: OptionalCell::empty(),
             tx_buffer: kernel::utilities::cells::TakeCell::empty(),
             tx_len: Cell::new(0),
-            tx_remaining_bytes: Cell::new(0),
             rx_client: OptionalCell::empty(),
             rx_buffer: kernel::utilities::cells::TakeCell::empty(),
             rx_len: Cell::new(0),
-            rx_remaining_bytes: Cell::new(0),
-            // rx_abort_in_progress: Cell::new(false),
-            // offset: Cell::new(0),
-            // src_freq: src,
+            src_freq: src,
         }
     }
 
+    pub fn new_uart1(src: u32) -> Self {
+        Self::new(UART1_BASE, src)
+    }
+
     /// Configure which pins the UART should use for txd, rxd, cts and rts
-    pub fn initialize(&self, src_freq: u32) {
-        self.set_baud_rate(115200, src_freq);
+    pub fn initialize(&self, baud_rate: u32) {
+        self.set_baud_rate(baud_rate, self.src_freq);
     }
 
     fn set_baud_rate_prescaler(&self, baud_rate: u32, src_freq: u32) {
@@ -193,14 +191,12 @@ impl<'a> Uart1<'a> {
 
         opt_dev = opt_dev.saturating_sub(1);
 
+        let upsr_val: u8 = ((opt_dev >> 8) as u8 & 0x07) | ((opt_prescalar << 3) & 0xF8);
+        let ubaud_val: u8 = opt_dev as u8;
+
         // Write to registers
-        self.registers.upsr.write(
-            Upsr::UDIV10_8.val(((opt_dev >> 8) & 0x7) as u8)
-                + Upsr::UPSC.val((opt_prescalar << 3) & 0xF8),
-        );
-        self.registers
-            .ubaud
-            .write(Ubaud::UDIV7_0.val((opt_dev & 0xFF) as u8));
+        self.registers.upsr.set(upsr_val);
+        self.registers.ubaud.set(ubaud_val);
     }
 
     fn fifo_enable(&self) {
@@ -220,19 +216,8 @@ impl<'a> Uart1<'a> {
             // Clear UART rx FIFO
             self.clear_rx_fifo();
 
-            // Configure UART interrupts
-            self.irq_rx_enable();
-            self.irq_tx_enable();
-
-            // TODO: Debug
-            unsafe {
-                // devalta
-                *(0x400C_301A_i32 as *mut u8) = 0x80_u8;
-                // devaltc
-                *(0x400C_301C_i32 as *mut u8) = 0x40_u8;
-                // clock: UART_PD on
-                *(0x4000_D008_i32 as *mut u8) = 0x10_u8;
-            }
+            // Configure UART interrupts            
+            self.irq_err_enable();
         }
     }
 
@@ -274,21 +259,31 @@ impl<'a> Uart1<'a> {
     fn clear_rx_fifo(&self) {
         // Clear all bytes from the RX FIFO by reading until empty.
         // Read all dummy bytes out from Rx FIFO
-        while self.rx_fifo_available() {
+        while self.rx_fifo_ready() {
             let _ = self.registers.urbuf.get();
         }
     }
 
     /// FIFO ready
-    fn rx_fifo_available(&self) -> bool {
+    fn rx_fifo_ready(&self) -> bool {
         // Returns true if RX FIFO has data available.
         self.registers.urxflv.read(Urxflv::RFL) != 0
+    }
+
+    fn rx_fifo_available(&self) -> u8 {
+        // Returns the number of bytes available in the RX FIFO, capped at 16.
+        self.registers.urxflv.read(Urxflv::RFL).min(TX_FIFO_SIZE)
     }
 
     fn tx_fifo_ready(&self) -> bool {
         // True if the Tx FIFO contains some space available
         // NPCM_UTXFLV_TFL is bits 0..=4 (5 bits), FIFO is full at 16
-        self.registers.utxflv.read(Utxflv::TFL) < 16
+        self.registers.utxflv.read(Utxflv::TFL) < TX_FIFO_SIZE
+    }
+
+    fn tx_fifo_available(&self) -> u8 {
+        // Returns the number of bytes available in the Tx FIFO.
+        TX_FIFO_SIZE.saturating_sub(self.registers.utxflv.read(Utxflv::TFL))
     }
 
     /// IRQ Err
@@ -308,7 +303,7 @@ impl<'a> Uart1<'a> {
     #[allow(dead_code)]
     fn irq_is_pending(&self) -> bool {
         // Returns true if either TX or RX interrupt is pending.
-        self.tx_fifo_ready() || self.rx_fifo_available()
+        self.tx_fifo_ready() || self.rx_fifo_ready()
     }
 
     /// IRQ tx enable/disable
@@ -342,114 +337,82 @@ impl<'a> Uart1<'a> {
 
     /// FIFO
     fn fifo_fill(&self, tx_data: &[u8], size: usize) -> bool {
-        if size == 0 {
+        let capped_size = min(size, tx_data.len());
+        if capped_size == 0 {
             return false;
         }
-        let capped_size = min(size, tx_data.len());
-        let mut tx_bytes = 0;
 
-        // If Tx FIFO is still ready to send
-        while (capped_size > tx_bytes) && self.tx_fifo_ready() {
-            // Put a character into Tx FIFO
-            self.registers.utbuf.set(tx_data[tx_bytes]);
-            tx_bytes += 1;
+        let mut bytes_sent = 0;
+        while bytes_sent < capped_size {
+            let tx_available = self.tx_fifo_available() as usize;
+            if tx_available == 0 {
+                // Wait until at least one slot is available
+                continue;
+            }
+
+            // Calculate how many bytes we can send in this iteration
+            let to_send = min(tx_available, capped_size - bytes_sent);
+            for i in 0..to_send {
+                self.registers.utbuf.set(tx_data[bytes_sent + i]);
+            }
+            bytes_sent += to_send;
         }
 
-        tx_bytes > 0
+        true
     }
 
     fn fifo_read(&self, rx_data: &mut [u8], size: usize) -> bool {
+        let capped_size = min(size, rx_data.len());
+        if capped_size == 0 {
+            return false;
+        }
+
         let mut rx_bytes = 0;
+        while rx_bytes < capped_size {
+            let rx_available = self.rx_fifo_available() as usize;
+            if rx_available == 0 {
+                // Wait until at least one byte is available
+                continue;
+            }
 
-        // While at least one byte is in the Rx FIFO
-        while (size - rx_bytes > 0) && self.rx_fifo_available() {
-            // Receive one byte from Rx FIFO
-            rx_data[rx_bytes] = self.registers.urbuf.get();
-            rx_bytes += 1;
+            let to_read = min(rx_available, capped_size - rx_bytes);
+            for i in 0..to_read {
+                rx_data[rx_bytes + i] = self.registers.urbuf.get();
+            }
+            rx_bytes += to_read;
         }
 
-        rx_bytes > 0
-    }
-
-    /// POLL
-    fn poll_out(&self, c: u8) {
-        while !self.fifo_fill(&[c], 1) {
-            // continue looping until the byte is written
-        }
-    }
-
-    fn poll_in(&self, c: &mut u8) -> i32 {
-        if self.fifo_read(core::slice::from_mut(c), 1) {
-            0
-        } else {
-            -1
-        }
+        true
     }
 
     /// UART interrupt handler that listens for both tx_end and rx_end events
     #[inline(never)]
     #[cfg(feature = "uart_interrupt_driven")]
     pub fn handle_interrupt(&self) {
-        // if self.tx_fifo_ready() {
-        //     self.irq_tx_disable();
+        if self.tx_fifo_ready() {
+            self.irq_tx_disable();
 
-        //     let rem = self.tx_remaining_bytes.get();
+            // All bytes have been transmitted
+            self.tx_client.map(|client| {
+                if let Some(tx_buffer) = self.tx_buffer.take() {
+                    client.transmitted_buffer(tx_buffer, self.tx_len.get(), Ok(()));
+                }
+            });
+        }
 
-        //     if rem > 0 {
-        //         self.tx_buffer.map(|buf| {
-        //             self.poll_out(buf[self.tx_len.get() - rem]);
-        //         });
-        //         self.tx_remaining_bytes.set(rem - 1);
+        if self.rx_fifo_ready() {
+            self.irq_rx_disable();
 
-        //         if rem - 1 == 0 {
-        //             // All bytes have been transmitted
-        //             self.tx_client.map(|client| {
-        //                 self.tx_buffer.take().map(|tx_buffer| {
-        //                     client.transmitted_buffer(tx_buffer, self.tx_len.get(), Ok(()));
-        //                 });
-        //             });
-        //         } else {
-        //             // Continue transmitting
-        //             self.irq_tx_enable();
-        //         }
-        //     }
-        // }
-
-        // if self.rx_fifo_available() {
-        //     self.irq_rx_disable();
-
-        //     let rem = self.rx_remaining_bytes.get();
-
-        //     if rem > 0 {
-        //         self.rx_buffer.map(|buf| {
-        //             self.poll_in(&mut buf[self.rx_len.get() - rem]);
-        //         });
-        //     }
-
-        //     self.rx_remaining_bytes.set(rem - 1);
-
-        //     if rem - 1 == 0 {
-        //         // Signal client that the read is done
-        //         self.rx_client.map(|client| {
-        //             self.rx_buffer.take().map(|rx_buffer| {
-        //                 client.received_buffer(
-        //                     rx_buffer,
-        //                     self.rx_len.get(),
-        //                     Ok(()),
-        //                     uart::Error::None,
-        //                 );
-        //             });
-        //         });
-        //     } else {
-        //         self.irq_rx_enable();
-        //     }
-        // }
+            // Signal client that the read is done
+            if let (Some(client), Some(rx_buffer)) = (self.rx_client.get(), self.rx_buffer.take()) {
+                client.received_buffer(rx_buffer, self.rx_len.get(), Ok(()), uart::Error::None);
+            }
+        }
     }
 
     /// Transmit one byte at the time and the client is responsible for polling
     /// This is used by the panic handler
     pub unsafe fn send_byte(&self, byte: u8) {
-        self.tx_remaining_bytes.set(1);
         // precaution: copy value into variable with static lifetime
         BYTE = byte;
 
@@ -461,7 +424,7 @@ impl<'a> Uart1<'a> {
     }
 }
 
-impl<'a> uart::Transmit<'a> for Uart1<'a> {
+impl<'a> uart::Transmit<'a> for Uart<'a> {
     fn set_transmit_client(&self, client: &'a dyn uart::TransmitClient) {
         self.tx_client.set(client);
     }
@@ -471,29 +434,18 @@ impl<'a> uart::Transmit<'a> for Uart1<'a> {
         tx_data: &'static mut [u8],
         tx_len: usize,
     ) -> Result<(), (ErrorCode, &'static mut [u8])> {
-        if tx_len == 0 || tx_len > tx_data.len() {
-            Err((ErrorCode::SIZE, tx_data))
-        } else if self.tx_buffer.is_some() {
-            Err((ErrorCode::BUSY, tx_data))
-        } else {
-            {
-                // let first_byte = tx_data[0];
-                // self.tx_buffer.replace(tx_data);
-                // self.tx_len.set(tx_len);
-                // self.tx_remaining_bytes.set(tx_len - 1);
+        self.irq_tx_enable();
 
-                // self.poll_out(first_byte);
+        if tx_data.len() < tx_len {
+            return Err((ErrorCode::SIZE, tx_data));
+        }
 
-                // if tx_len > 1 {
-                //     self.irq_tx_enable();
-                // }
-            }
-
-            for i in 0..tx_len {
-                self.poll_out(tx_data[i]);
-            }
-
+        if self.fifo_fill(tx_data, tx_len) {
+            self.tx_buffer.replace(tx_data);
+            self.tx_len.set(tx_len);
             Ok(())
+        } else {
+            Err((ErrorCode::SIZE, tx_data))
         }
     }
 
@@ -506,7 +458,7 @@ impl<'a> uart::Transmit<'a> for Uart1<'a> {
     }
 }
 
-impl uart::Configure for Uart1<'_> {
+impl uart::Configure for Uart<'_> {
     fn configure(&self, params: uart::Parameters) -> Result<(), ErrorCode> {
         // These could probably be implemented, but are currently ignored, so
         // throw an error.
@@ -526,7 +478,7 @@ impl uart::Configure for Uart1<'_> {
     }
 }
 
-impl<'a> uart::Receive<'a> for Uart1<'a> {
+impl<'a> uart::Receive<'a> for Uart<'a> {
     fn set_receive_client(&self, client: &'a dyn uart::ReceiveClient) {
         self.rx_client.set(client);
     }
@@ -536,29 +488,15 @@ impl<'a> uart::Receive<'a> for Uart1<'a> {
         rx_buf: &'static mut [u8],
         rx_len: usize,
     ) -> Result<(), (ErrorCode, &'static mut [u8])> {
-        if self.rx_buffer.is_some() {
-            return Err((ErrorCode::BUSY, rx_buf));
-        }
+        self.irq_rx_enable();
 
-        // Determine the actual length to read
-        let read_length = min(rx_len, rx_buf.len());
-
-        // Attempt to read the first byte if the buffer is not empty
-        if read_length > 0 {
-            self.poll_in(&mut rx_buf[0]);
-
-            // Store the buffer and set the remaining bytes
+        if self.fifo_read(rx_buf, rx_len) {
             self.rx_buffer.replace(rx_buf);
-            self.rx_len.set(read_length);
-            self.rx_remaining_bytes.set(read_length - 1);
-
-            // Enable RX interrupt if more than one byte is expected
-            if read_length > 1 {
-                self.irq_rx_enable();
-            }
+            self.rx_len.set(rx_len); 
+            Ok(())
+        } else {
+            Err((ErrorCode::SIZE, rx_buf))
         }
-
-        Ok(())
     }
 
     fn receive_word(&self) -> Result<(), ErrorCode> {
@@ -576,7 +514,7 @@ mod tests {
 
     #[test]
     fn baud_rate_divider_calculation() {
-        let u = super::Uart1::new(super::UART1_BASE);
+        let u = super::Uart::new(super::UART1_BASE, 96_000_000);
         assert_eq!(u.get_divider_for_baud(0), Err(ErrorCode::INVAL));
         assert_eq!(u.get_divider_for_baud(4_000_000), Err(ErrorCode::INVAL));
 

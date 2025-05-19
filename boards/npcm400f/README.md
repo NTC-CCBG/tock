@@ -1,5 +1,4 @@
-STM32 Discovery kit development board with STM32F303 MCU
-========================================================
+# STM32 Discovery kit development board with STM32F303 MCU
 
 ## Flashing the kernel
 
