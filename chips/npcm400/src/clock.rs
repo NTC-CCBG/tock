@@ -90,32 +90,102 @@ register_structs! {
         (0x04 => disidl_ctl: ReadWrite<u8>),      // Disable in Idle Control Byte
         (0x05 => disidl_ctl1: ReadWrite<u8>),     // Disable in Idle Control 1 Byte
         (0x06 => _reserved2),
-        (0x07 => pwdwn_ctl0: ReadWrite<u8>),      // Power-Down Control 0 Byte
+        (0x07 => pwdwn_ctl0: ReadWrite<u8, Pwdwn_ctl0::Register>),      // Power-Down Control 0 Byte
         (0x08 => pwdwn_ctl1: ReadWrite<u8, Pwdwn_ctl1::Register>),      // Power-Down Control 1 Byte
-        (0x09 => pwdwn_ctl2: ReadWrite<u8>),      // Power-Down Control 2 Byte
-        (0x0A => pwdwn_ctl3: ReadWrite<u8>),      // Power-Down Control 3 Byte
+        (0x09 => pwdwn_ctl2: ReadWrite<u8, Pwdwn_ctl2::Register>),      // Power-Down Control 2 Byte
+        (0x0A => pwdwn_ctl3: ReadWrite<u8, Pwdwn_ctl3::Register>),      // Power-Down Control 3 Byte
         (0x0B => pwdwn_ctl4: ReadWrite<u8, Pwdwn_ctl4::Register>),      // Power-Down Control 4 Byte
-        (0x0C => pwdwn_ctl5: ReadWrite<u8>),      // Power-Down Control 5 Byte
-        (0x0D => pwdwn_ctl6: ReadWrite<u8>),      // Power-Down Control 6 Byte
+        (0x0C => pwdwn_ctl5: ReadWrite<u8, Pwdwn_ctl5::Register>),      // Power-Down Control 5 Byte
+        (0x0D => pwdwn_ctl6: ReadWrite<u8, Pwdwn_ctl6::Register>),      // Power-Down Control 6 Byte
         (0x0E => _reserved3),
         (0x11 => ram_pd1: ReadWrite<u8>),         // RAM Power-Down Control 1 Byte
         (0x12 => ram_pd2: ReadWrite<u8>),         // RAM Power-Down Control 2 Byte
         (0x13 => sw_rst1: ReadWrite<u8>),         // Software Reset 1 Byte
         (0x14 => ram_pd3: ReadWrite<u8>),         // RAM Power-Down Control 3 Byte
-        (0x15 => pwdwn_ctl7: ReadWrite<u8>),      // Power-Down Control 7 Byte
-        (0x16 => pwdwn_ctl8: ReadWrite<u8>),      // Power-Down Control 8 Byte
+        (0x15 => pwdwn_ctl7: ReadWrite<u8, Pwdwn_ctl7::Register>),      // Power-Down Control 7 Byte
+        (0x16 => pwdwn_ctl8: ReadWrite<u8, Pwdwn_ctl8::Register>),      // Power-Down Control 8 Byte
         (0x17 => @END),
     }
 }
 
 register_bitfields! [u8,
+    Pwdwn_ctl0 [
+        PWM_I_PD OFFSET(0) NUMBITS(1) [],
+        PWM_J_PD OFFSET(1) NUMBITS(1) [],
+        I3CI_PD OFFSET(2) NUMBITS(1) [],
+        UART3_PD OFFSET(5) NUMBITS(1) [],
+        UART2_PD OFFSET(6) NUMBITS(1) [],
+    ],
     Pwdwn_ctl1 [
+        SPIM_PD OFFSET(0) NUMBITS(1) [],
         FIU_PD OFFSET(2) NUMBITS(1) [],
+        USB20_PD OFFSET(3) NUMBITS(1) [],
         UART_PD OFFSET(4) NUMBITS(1) [],
+        MFT1_PD OFFSET(5) NUMBITS(1) [],
+        MFT2_PD OFFSET(6) NUMBITS(1) [],
+        MFT3_PD OFFSET(7) NUMBITS(1) [],
+    ],
+    Pwdwn_ctl2 [
+        PWM_A_PD OFFSET(0) NUMBITS(1) [],
+        PWM_B_PD OFFSET(1) NUMBITS(1) [],
+        PWM_C_PD OFFSET(2) NUMBITS(1) [],
+        PWM_D_PD OFFSET(3) NUMBITS(1) [],
+        PWM_E_PD OFFSET(4) NUMBITS(1) [],
+        PWM_F_PD OFFSET(5) NUMBITS(1) [],
+        PWM_G_PD OFFSET(6) NUMBITS(1) [],
+        PWM_H_PD OFFSET(7) NUMBITS(1) [],
+    ],
+    Pwdwn_ctl3 [
+        GDMA_PD OFFSET(0) NUMBITS(1) [],
+        SMB6_PD OFFSET(1) NUMBITS(1) [],
+        SMB5_PD OFFSET(2) NUMBITS(1) [],
+        SMB4_PD OFFSET(3) NUMBITS(1) [],
+        SMB3_PD OFFSET(4) NUMBITS(1) [],
+        SMB2_PD OFFSET(5) NUMBITS(1) [],
+        SMB1_PD OFFSET(6) NUMBITS(1) [],
     ],
     Pwdwn_ctl4 [
+        ITIM1_PD OFFSET(0) NUMBITS(1) [],
+        ITIM2_PD OFFSET(1) NUMBITS(1) [],
+        ITIM3_PD OFFSET(2) NUMBITS(1) [],
+        SMB_DMA_PD OFFSET(3) NUMBITS(1) [],
         ADC_PD OFFSET(4) NUMBITS(1) [],
+        PECI_PD OFFSET(5) NUMBITS(1) [],
+        SPIP1_PD OFFSET(7) NUMBITS(1) [],
     ],
+    Pwdwn_ctl5 [
+        UART4_PD OFFSET(0) NUMBITS(1) [],
+        C2HACC_PD OFFSET(3) NUMBITS(1) [],
+        SHM_REG_PD OFFSET(4) NUMBITS(1) [],
+        SHM_PD OFFSET(5) NUMBITS(1) [],
+        DP80_PD OFFSET(6) NUMBITS(1) [],
+        MSWC_PD OFFSET(7) NUMBITS(1) [],
+    ],
+    Pwdwn_ctl6 [
+        ITIM4_PD OFFSET(0) NUMBITS(1) [],
+        ITIM5_PD OFFSET(1) NUMBITS(1) [],
+        ITIM6_PD OFFSET(2) NUMBITS(1) [],
+        RNG_PD OFFSET(3) NUMBITS(1) [],
+        SHA_PD OFFSET(5) NUMBITS(1) [],
+        eSPI_PD OFFSET(7) NUMBITS(1) [],
+    ],
+    Pwdwn_ctl7 [
+        SMB7_PD OFFSET(0) NUMBITS(1) [],
+        SMB8_PD OFFSET(1) NUMBITS(1) [],
+        SMB9_PD OFFSET(2) NUMBITS(1) [],
+        SMB10_PD OFFSET(3) NUMBITS(1) [],
+        SMB11_PD OFFSET(4) NUMBITS(1) [],
+        SMB12_PD OFFSET(5) NUMBITS(1) [],
+        SIOX2_PD OFFSET(6) NUMBITS(1) [],
+        SIOX1_PD OFFSET(7) NUMBITS(1) [],
+    ],
+    Pwdwn_ctl8 [
+        I3CI2_PD OFFSET(0) NUMBITS(1) [],
+        I3CI3_PD OFFSET(1) NUMBITS(1) [],
+        I3CI4_PD OFFSET(2) NUMBITS(1) [],
+        I3CI5_PD OFFSET(3) NUMBITS(1) [],
+        I3CI6_PD OFFSET(4) NUMBITS(1) [],
+    ]
 ];
 
 const POWER_BASE: StaticRef<PowerRegisters> =
@@ -219,10 +289,67 @@ pub static PRESCALER: Prescaler = Prescaler {
 
 /// High clocks
 #[derive(Copy, Clone, PartialEq)]
+#[allow(non_camel_case_types)]
 pub enum HighClocks {
-    UART = 0,
+    PWM_I = 0,
+    PWM_J,
+    I3CI,
+    UART3,
+    UART2,
+    SPIM,
     FIU,
+    USB20,
+    UART,
+    MFT1,
+    MFT2,
+    MFT3,
+    PWM_A,
+    PWM_B,
+    PWM_C,
+    PWM_D,
+    PWM_E,
+    PWM_F,
+    PWM_G,
+    PWM_H,
+    SMB1,
+    SMB2,
+    SMB3,
+    SMB4,
+    SMB5,
+    SMB6,
+    GDMA,
+    ITIM1,
+    ITIM2,
+    ITIM3,
+    SMB_DMA,
     ADC,
+    PECI,
+    SPIP1,
+    UART4,
+    C2HACC,
+    SHM_REG,
+    SHM,
+    DP80,
+    MSWC,
+    ITIM4,
+    ITIM5,
+    ITIM6,
+    RNG,
+    SHA,
+    ESPI,
+    SMB7,
+    SMB8,
+    SMB9,
+    SMB10,
+    SMB11,
+    SMB12,
+    SIOX2,
+    SIOX1,
+    I3CI2,
+    I3CI3,
+    I3CI4,
+    I3CI5,
+    I3CI6,
 }
 
 /// High frequency clock source
@@ -242,6 +369,19 @@ pub enum HighClockSource {
     SIO,
 }
 
+// Power down register mapping
+enum PowerDownReg {
+    CTL0,
+    CTL1,
+    CTL2,
+    CTL3,
+    CTL4,
+    CTL5,
+    CTL6,
+    CTL7,
+    CTL8,
+}
+
 #[derive(Copy, Clone)]
 pub struct Clocks {
     clock: HighClocks,
@@ -254,46 +394,125 @@ impl Clocks {
         self.supported
     }
 
-    fn clock_on(&self, power_reg: StaticRef<PowerRegisters>) -> Result<(), &str> {
+    // Helper: map HighClocks to (register, field)
+    fn get_pd_reg_field(&self, clock: HighClocks) -> Option<(PowerDownReg, u8)> {
+        Some(match clock {
+            HighClocks::PWM_I => (PowerDownReg::CTL0, 0),
+            HighClocks::PWM_J => (PowerDownReg::CTL0, 1),
+            HighClocks::I3CI => (PowerDownReg::CTL0, 2),
+            HighClocks::UART3 => (PowerDownReg::CTL0, 5),
+            HighClocks::UART2 => (PowerDownReg::CTL0, 6),
+            HighClocks::SPIM => (PowerDownReg::CTL1, 0),
+            HighClocks::FIU => (PowerDownReg::CTL1, 2),
+            HighClocks::USB20 => (PowerDownReg::CTL1, 3),
+            HighClocks::UART => (PowerDownReg::CTL1, 4),
+            HighClocks::MFT1 => (PowerDownReg::CTL1, 5),
+            HighClocks::MFT2 => (PowerDownReg::CTL1, 6),
+            HighClocks::MFT3 => (PowerDownReg::CTL1, 7),
+            HighClocks::PWM_A => (PowerDownReg::CTL2, 0),
+            HighClocks::PWM_B => (PowerDownReg::CTL2, 1),
+            HighClocks::PWM_C => (PowerDownReg::CTL2, 2),
+            HighClocks::PWM_D => (PowerDownReg::CTL2, 3),
+            HighClocks::PWM_E => (PowerDownReg::CTL2, 4),
+            HighClocks::PWM_F => (PowerDownReg::CTL2, 5),
+            HighClocks::PWM_G => (PowerDownReg::CTL2, 6),
+            HighClocks::PWM_H => (PowerDownReg::CTL2, 7),
+            HighClocks::GDMA => (PowerDownReg::CTL3, 0),
+            HighClocks::SMB6 => (PowerDownReg::CTL3, 1),
+            HighClocks::SMB5 => (PowerDownReg::CTL3, 2),
+            HighClocks::SMB4 => (PowerDownReg::CTL3, 3),
+            HighClocks::SMB3 => (PowerDownReg::CTL3, 4),
+            HighClocks::SMB2 => (PowerDownReg::CTL3, 5),
+            HighClocks::SMB1 => (PowerDownReg::CTL3, 6),
+            HighClocks::ITIM1 => (PowerDownReg::CTL4, 0),
+            HighClocks::ITIM2 => (PowerDownReg::CTL4, 1),
+            HighClocks::ITIM3 => (PowerDownReg::CTL4, 2),
+            HighClocks::SMB_DMA => (PowerDownReg::CTL4, 3),
+            HighClocks::ADC => (PowerDownReg::CTL4, 4),
+            HighClocks::PECI => (PowerDownReg::CTL4, 5),
+            HighClocks::SPIP1 => (PowerDownReg::CTL4, 7),
+            HighClocks::UART4 => (PowerDownReg::CTL5, 0),
+            HighClocks::C2HACC => (PowerDownReg::CTL5, 3),
+            HighClocks::SHM_REG => (PowerDownReg::CTL5, 4),
+            HighClocks::SHM => (PowerDownReg::CTL5, 5),
+            HighClocks::DP80 => (PowerDownReg::CTL5, 6),
+            HighClocks::MSWC => (PowerDownReg::CTL5, 7),
+            HighClocks::ITIM4 => (PowerDownReg::CTL6, 0),
+            HighClocks::ITIM5 => (PowerDownReg::CTL6, 1),
+            HighClocks::ITIM6 => (PowerDownReg::CTL6, 2),
+            HighClocks::RNG => (PowerDownReg::CTL6, 3),
+            HighClocks::SHA => (PowerDownReg::CTL6, 5),
+            HighClocks::ESPI => (PowerDownReg::CTL6, 7),
+            HighClocks::SMB7 => (PowerDownReg::CTL7, 0),
+            HighClocks::SMB8 => (PowerDownReg::CTL7, 1),
+            HighClocks::SMB9 => (PowerDownReg::CTL7, 2),
+            HighClocks::SMB10 => (PowerDownReg::CTL7, 3),
+            HighClocks::SMB11 => (PowerDownReg::CTL7, 4),
+            HighClocks::SMB12 => (PowerDownReg::CTL7, 5),
+            HighClocks::SIOX2 => (PowerDownReg::CTL7, 6),
+            HighClocks::SIOX1 => (PowerDownReg::CTL7, 7),
+            HighClocks::I3CI2 => (PowerDownReg::CTL8, 0),
+            HighClocks::I3CI3 => (PowerDownReg::CTL8, 1),
+            HighClocks::I3CI4 => (PowerDownReg::CTL8, 2),
+            HighClocks::I3CI5 => (PowerDownReg::CTL8, 3),
+            HighClocks::I3CI6 => (PowerDownReg::CTL8, 4),
+        })
+    }
+
+    fn set_pd_bit(&self, power_reg: StaticRef<PowerRegisters>) -> Result<(), &str> {
         if !self.check_support() {
             return Err("Clock not supported");
         }
-        match self.clock {
-            HighClocks::UART => {
-                // Clear UART_PD bit in pwdwn_ctl1
-                power_reg.pwdwn_ctl1.modify(Pwdwn_ctl1::UART_PD::CLEAR);
+
+        if let Some((reg, bit)) = self.get_pd_reg_field(self.clock) {
+            let mask = 1 << bit;
+            match reg {
+                PowerDownReg::CTL0 => power_reg.pwdwn_ctl0.set(power_reg.pwdwn_ctl0.get() | mask),
+                PowerDownReg::CTL1 => power_reg.pwdwn_ctl1.set(power_reg.pwdwn_ctl1.get() | mask),
+                PowerDownReg::CTL2 => power_reg.pwdwn_ctl2.set(power_reg.pwdwn_ctl2.get() | mask),
+                PowerDownReg::CTL3 => power_reg.pwdwn_ctl3.set(power_reg.pwdwn_ctl3.get() | mask),
+                PowerDownReg::CTL4 => power_reg.pwdwn_ctl4.set(power_reg.pwdwn_ctl4.get() | mask),
+                PowerDownReg::CTL5 => power_reg.pwdwn_ctl5.set(power_reg.pwdwn_ctl5.get() | mask),
+                PowerDownReg::CTL6 => power_reg.pwdwn_ctl6.set(power_reg.pwdwn_ctl6.get() | mask),
+                PowerDownReg::CTL7 => power_reg.pwdwn_ctl7.set(power_reg.pwdwn_ctl7.get() | mask),
+                PowerDownReg::CTL8 => power_reg.pwdwn_ctl8.set(power_reg.pwdwn_ctl8.get() | mask),
             }
-            HighClocks::FIU => {
-                // Clear FIU_PD bit in pwdwn_ctl1
-                power_reg.pwdwn_ctl1.modify(Pwdwn_ctl1::FIU_PD::CLEAR);
-            }
-            HighClocks::ADC => {
-                // Clear ADC_PD bit in pwdwn_ctl4
-                power_reg.pwdwn_ctl4.modify(Pwdwn_ctl4::ADC_PD::CLEAR);
-            }
+            Ok(())
+        } else {
+            Err("Clock not supported")
         }
-        Ok(())
+    }
+
+    fn clear_pd_bit(&self, power_reg: StaticRef<PowerRegisters>) -> Result<(), &str> {
+        if !self.check_support() {
+            return Err("Clock not supported");
+        }
+
+        if let Some((reg, bit)) = self.get_pd_reg_field(self.clock) {
+            let mask = 1 << bit;
+            match reg {
+                PowerDownReg::CTL0 => power_reg.pwdwn_ctl0.set(power_reg.pwdwn_ctl0.get() & !mask),
+                PowerDownReg::CTL1 => power_reg.pwdwn_ctl1.set(power_reg.pwdwn_ctl1.get() & !mask),
+                PowerDownReg::CTL2 => power_reg.pwdwn_ctl2.set(power_reg.pwdwn_ctl2.get() & !mask),
+                PowerDownReg::CTL3 => power_reg.pwdwn_ctl3.set(power_reg.pwdwn_ctl3.get() & !mask),
+                PowerDownReg::CTL4 => power_reg.pwdwn_ctl4.set(power_reg.pwdwn_ctl4.get() & !mask),
+                PowerDownReg::CTL5 => power_reg.pwdwn_ctl5.set(power_reg.pwdwn_ctl5.get() & !mask),
+                PowerDownReg::CTL6 => power_reg.pwdwn_ctl6.set(power_reg.pwdwn_ctl6.get() & !mask),
+                PowerDownReg::CTL7 => power_reg.pwdwn_ctl7.set(power_reg.pwdwn_ctl7.get() & !mask),
+                PowerDownReg::CTL8 => power_reg.pwdwn_ctl8.set(power_reg.pwdwn_ctl8.get() & !mask),
+            }
+            Ok(())
+        } else {
+            Err("Clock not supported")
+        }
+    }
+
+    fn clock_on(&self, power_reg: StaticRef<PowerRegisters>) -> Result<(), &str> {
+        self.clear_pd_bit(power_reg)
     }
 
     fn clock_off(&self, power_reg: StaticRef<PowerRegisters>) -> Result<(), &str> {
-        if !self.check_support() {
-            return Err("Clock not supported");
-        }
-        match self.clock {
-            HighClocks::UART => {
-                // Clear UART_PD bit in pwdwn_ctl1
-                power_reg.pwdwn_ctl1.modify(Pwdwn_ctl1::UART_PD::SET);
-            }
-            HighClocks::FIU => {
-                // Clear FIU_PD bit in pwdwn_ctl1
-                power_reg.pwdwn_ctl1.modify(Pwdwn_ctl1::FIU_PD::SET);
-            }
-            HighClocks::ADC => {
-                // Clear ADC_PD bit in pwdwn_ctl4
-                power_reg.pwdwn_ctl4.modify(Pwdwn_ctl4::ADC_PD::SET);
-            }
-        }
-        Ok(())
+        self.set_pd_bit(power_reg)
     }
 
     #[allow(dead_code)]
