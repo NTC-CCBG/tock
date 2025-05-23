@@ -335,6 +335,7 @@ SECTIONS
          * future enhancement may allow the kernel to parcel this memory space
          * dynamically, requiring changes to this section.
          */
+         . = 0x10048000;
         _sappmem = .;
         *(.app_memory)
     } > ram
