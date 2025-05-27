@@ -48,7 +48,7 @@ const NUM_PROCS: usize = 4;
 
 // Actual memory for holding the active process structures.
 static mut PROCESSES: [Option<&'static dyn kernel::process::Process>; NUM_PROCS] =
-    [None, None, None, None];
+    [None; NUM_PROCS];
 
 // Static reference to chip for panic dumps.
 static mut CHIP: Option<&'static npcm400::chip::Npcm400<Npcm400DefaultPeripherals>> = None;

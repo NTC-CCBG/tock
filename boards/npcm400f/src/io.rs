@@ -13,7 +13,7 @@ use kernel::hil::led;
 use kernel::hil::uart;
 use kernel::hil::uart::Configure;
 
-// use npcm400::gpio::PinId;
+use npcm400::gpio::PinId;
 
 use crate::CHIP;
 use crate::PROCESSES;
@@ -75,30 +75,17 @@ impl IoWrite for Writer {
 /// Panic handler.
 #[panic_handler]
 pub unsafe fn panic_fmt(info: &PanicInfo) -> ! {
-    // User LD3 is connected to PE09
-    // Have to reinitialize several peripherals because otherwise can't access them here.
-
-    // let rcc = npcm400::rcc::Rcc::new();
-    // let syscfg = npcm400::syscfg::Syscfg::new(&rcc);
-    // let exti = npcm400::exti::Exti::new(&syscfg);
-    // let pin = npcm400::gpio::Pin::new(PinId::PE09, &exti);
-    // let gpio_ports = npcm400::gpio::GpioPorts::new(&rcc, &exti);
-    // pin.set_ports_ref(&gpio_ports);
-    // let led = &mut led::LedHigh::new(&pin);
+    let led_kernel_pin = &npcm400::gpio::Pin::new(PinId::PF15);
+    let led = &mut led::LedLow::new(led_kernel_pin);
     let writer = &mut *addr_of_mut!(WRITER);
 
-    // let led_kernel_pin = &npcm400::gpio::GPIOPin::new(Pin::P0_13);
-    // let led = &mut led::LedLow::new(led_kernel_pin);
-
-    // debug::panic(
-    //     &mut [led],
-    //     writer,
-    //     info,
-    //     &cortexm4::support::nop,
-    //     &*addr_of!(PROCESSES),
-    //     &*addr_of!(CHIP),
-    //     &*addr_of!(PROCESS_PRINTER),
-    // )
-
-    loop {}
+    debug::panic(
+        &mut [led],
+        writer,
+        info,
+        &cortexm4::support::nop,
+        &*addr_of!(PROCESSES),
+        &*addr_of!(CHIP),
+        &*addr_of!(PROCESS_PRINTER),
+    );
 }

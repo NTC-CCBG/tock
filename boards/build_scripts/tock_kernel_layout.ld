@@ -281,6 +281,7 @@ SECTIONS
         /* _sapps symbol used by Tock to look for first application. */
         . = ALIGN(4);
         _sapps = .;
+        /* . = . + 0x800; */
 
         /* Include placeholder bytes in this section so that the linker
          * includes a segment for it. Otherwise the section will be empty and
@@ -335,7 +336,7 @@ SECTIONS
          * future enhancement may allow the kernel to parcel this memory space
          * dynamically, requiring changes to this section.
          */
-         . = 0x10048000;
+        /* . = 0x10048000; */
         _sappmem = .;
         *(.app_memory)
     } > ram

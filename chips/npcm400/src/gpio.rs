@@ -569,9 +569,9 @@ enum_from_primitive! {
 }
 
 macro_rules! declare_gpio_pins {
-    ($($pin:ident)*, $exti:expr) => {
+    ($($pin:ident)*) => {
         [
-            $(Some(Pin::new(PinId::$pin, $exti)), )*
+            $(Some(Pin::new(PinId::$pin)), )*
         ]
     }
 }
@@ -581,90 +581,66 @@ macro_rules! declare_gpio_pins {
 // historical reasons. If writing new GPIO code, look elsewhere for
 // a template on how to structure the relationship between ports and pins.
 pub struct GpioPorts<'a> {
-    ports: [Port<'a>; 6],
+    ports: [Port; 6],
     pins: [[Option<Pin<'a>>; 16]; 6],
 }
 
 impl<'a> GpioPorts<'a> {
-    pub fn new(rcc: &'a rcc::Rcc, exti: &'a exti::Exti<'a>) -> Self {
+    pub fn new() -> Self {
         Self {
             ports: [
                 Port {
                     registers: GPIOA_BASE,
-                    clock: PortClock(rcc::PeripheralClock::new(
-                        rcc::PeripheralClockType::AHB(rcc::HCLK::GPIOA),
-                        rcc,
-                    )),
                 },
                 Port {
                     registers: GPIOB_BASE,
-                    clock: PortClock(rcc::PeripheralClock::new(
-                        rcc::PeripheralClockType::AHB(rcc::HCLK::GPIOB),
-                        rcc,
-                    )),
                 },
                 Port {
                     registers: GPIOC_BASE,
-                    clock: PortClock(rcc::PeripheralClock::new(
-                        rcc::PeripheralClockType::AHB(rcc::HCLK::GPIOC),
-                        rcc,
-                    )),
                 },
                 Port {
                     registers: GPIOD_BASE,
-                    clock: PortClock(rcc::PeripheralClock::new(
-                        rcc::PeripheralClockType::AHB(rcc::HCLK::GPIOD),
-                        rcc,
-                    )),
                 },
                 Port {
                     registers: GPIOE_BASE,
-                    clock: PortClock(rcc::PeripheralClock::new(
-                        rcc::PeripheralClockType::AHB(rcc::HCLK::GPIOE),
-                        rcc,
-                    )),
                 },
                 Port {
                     registers: GPIOF_BASE,
-                    clock: PortClock(rcc::PeripheralClock::new(
-                        rcc::PeripheralClockType::AHB(rcc::HCLK::GPIOF),
-                        rcc,
-                    )),
                 },
             ],
             pins: [
                 declare_gpio_pins! {
                     PA00 PA01 PA02 PA03 PA04 PA05 PA06 PA07
-                    PA08 PA09 PA10 PA11 PA12 PA13 PA14 PA15, exti
+                    PA08 PA09 PA10 PA11 PA12 PA13 PA14 PA15
                 },
                 declare_gpio_pins! {
                     PB00 PB01 PB02 PB03 PB04 PB05 PB06 PB07
-                    PB08 PB09 PB10 PB11 PB12 PB13 PB14 PB15, exti
+                    PB08 PB09 PB10 PB11 PB12 PB13 PB14 PB15
                 },
                 declare_gpio_pins! {
                     PC00 PC01 PC02 PC03 PC04 PC05 PC06 PC07
-                    PC08 PC09 PC10 PC11 PC12 PC13 PC14 PC15, exti
+                    PC08 PC09 PC10 PC11 PC12 PC13 PC14 PC15
                 },
                 declare_gpio_pins! {
                     PD00 PD01 PD02 PD03 PD04 PD05 PD06 PD07
-                    PD08 PD09 PD10 PD11 PD12 PD13 PD14 PD15, exti
+                    PD08 PD09 PD10 PD11 PD12 PD13 PD14 PD15
                 },
                 declare_gpio_pins! {
                     PE00 PE01 PE02 PE03 PE04 PE05 PE06 PE07
-                    PE08 PE09 PE10 PE11 PE12 PE13 PE14 PE15, exti
+                    PE08 PE09 PE10 PE11 PE12 PE13 PE14 PE15
                 },
                 [
-                    Some(Pin::new(PinId::PF00, exti)),
-                    Some(Pin::new(PinId::PF01, exti)),
-                    Some(Pin::new(PinId::PF02, exti)),
-                    Some(Pin::new(PinId::PF03, exti)),
-                    Some(Pin::new(PinId::PF04, exti)),
-                    Some(Pin::new(PinId::PF05, exti)),
-                    Some(Pin::new(PinId::PF06, exti)),
-                    Some(Pin::new(PinId::PF07, exti)),
-                    Some(Pin::new(PinId::PF08, exti)),
-                    Some(Pin::new(PinId::PF09, exti)),
-                    Some(Pin::new(PinId::PF10, exti)),
+                    Some(Pin::new(PinId::PF00)),
+                    Some(Pin::new(PinId::PF01)),
+                    Some(Pin::new(PinId::PF02)),
+                    Some(Pin::new(PinId::PF03)),
+                    Some(Pin::new(PinId::PF04)),
+                    Some(Pin::new(PinId::PF05)),
+                    Some(Pin::new(PinId::PF06)),
+                    Some(Pin::new(PinId::PF07)),
+                    Some(Pin::new(PinId::PF08)),
+                    Some(Pin::new(PinId::PF09)),
+                    Some(Pin::new(PinId::PF10)),
                     None,
                     None,
                     None,
@@ -684,58 +660,24 @@ impl<'a> GpioPorts<'a> {
     }
 }
 
-pub struct Port<'a> {
+pub struct Port {
     registers: StaticRef<GpioRegisters>,
-    clock: PortClock<'a>,
-}
-
-impl Port<'_> {
-    pub fn is_enabled_clock(&self) -> bool {
-        self.clock.is_enabled()
-    }
-
-    pub fn enable_clock(&self) {
-        self.clock.enable();
-    }
-
-    pub fn disable_clock(&self) {
-        self.clock.disable();
-    }
-}
-
-struct PortClock<'a>(rcc::PeripheralClock<'a>);
-
-impl ClockInterface for PortClock<'_> {
-    fn is_enabled(&self) -> bool {
-        self.0.is_enabled()
-    }
-
-    fn enable(&self) {
-        self.0.enable();
-    }
-
-    fn disable(&self) {
-        self.0.disable();
-    }
+    // clock: PortClock,
 }
 
 // `exti_lineid` is used to configure EXTI settings for the Pin.
 pub struct Pin<'a> {
     pinid: PinId,
     ports_ref: OptionalCell<&'a GpioPorts<'a>>,
-    exti: &'a exti::Exti<'a>,
     client: OptionalCell<&'a dyn hil::gpio::Client>,
-    exti_lineid: OptionalCell<exti::LineId>,
 }
 
 impl<'a> Pin<'a> {
-    pub const fn new(pinid: PinId, exti: &'a exti::Exti<'a>) -> Self {
+    pub const fn new(pinid: PinId) -> Self {
         Self {
             pinid,
             ports_ref: OptionalCell::empty(),
-            exti,
             client: OptionalCell::empty(),
-            exti_lineid: OptionalCell::empty(),
         }
     }
 
@@ -752,77 +694,79 @@ impl<'a> Pin<'a> {
     }
 
     pub fn get_mode(&self) -> Mode {
-        let port = self.ports_ref.unwrap_or_panic().get_port(self.pinid); // Unwrap fail = Err
+        // let port = self.ports_ref.unwrap_or_panic().get_port(self.pinid); // Unwrap fail = Err
 
-        let val = match self.pinid.get_pin_number() {
-            0b0000 => port.registers.moder.read(MODER::MODER0),
-            0b0001 => port.registers.moder.read(MODER::MODER1),
-            0b0010 => port.registers.moder.read(MODER::MODER2),
-            0b0011 => port.registers.moder.read(MODER::MODER3),
-            0b0100 => port.registers.moder.read(MODER::MODER4),
-            0b0101 => port.registers.moder.read(MODER::MODER5),
-            0b0110 => port.registers.moder.read(MODER::MODER6),
-            0b0111 => port.registers.moder.read(MODER::MODER7),
-            0b1000 => port.registers.moder.read(MODER::MODER8),
-            0b1001 => port.registers.moder.read(MODER::MODER9),
-            0b1010 => port.registers.moder.read(MODER::MODER10),
-            0b1011 => port.registers.moder.read(MODER::MODER11),
-            0b1100 => port.registers.moder.read(MODER::MODER12),
-            0b1101 => port.registers.moder.read(MODER::MODER13),
-            0b1110 => port.registers.moder.read(MODER::MODER14),
-            0b1111 => port.registers.moder.read(MODER::MODER15),
-            _ => 0,
-        };
+        // let val = match self.pinid.get_pin_number() {
+        //     0b0000 => port.registers.moder.read(MODER::MODER0),
+        //     0b0001 => port.registers.moder.read(MODER::MODER1),
+        //     0b0010 => port.registers.moder.read(MODER::MODER2),
+        //     0b0011 => port.registers.moder.read(MODER::MODER3),
+        //     0b0100 => port.registers.moder.read(MODER::MODER4),
+        //     0b0101 => port.registers.moder.read(MODER::MODER5),
+        //     0b0110 => port.registers.moder.read(MODER::MODER6),
+        //     0b0111 => port.registers.moder.read(MODER::MODER7),
+        //     0b1000 => port.registers.moder.read(MODER::MODER8),
+        //     0b1001 => port.registers.moder.read(MODER::MODER9),
+        //     0b1010 => port.registers.moder.read(MODER::MODER10),
+        //     0b1011 => port.registers.moder.read(MODER::MODER11),
+        //     0b1100 => port.registers.moder.read(MODER::MODER12),
+        //     0b1101 => port.registers.moder.read(MODER::MODER13),
+        //     0b1110 => port.registers.moder.read(MODER::MODER14),
+        //     0b1111 => port.registers.moder.read(MODER::MODER15),
+        //     _ => 0,
+        // };
 
-        Mode::from_u32(val).unwrap_or(Mode::Input)
+        // Mode::from_u32(val).unwrap_or(Mode::Input)
+
+        Mode::from_u32(0).unwrap_or(Mode::Input)
     }
 
     pub fn set_mode(&self, mode: Mode) {
-        let port = self.ports_ref.unwrap_or_panic().get_port(self.pinid); // Unwrap fail =
+        // let port = self.ports_ref.unwrap_or_panic().get_port(self.pinid); // Unwrap fail =
 
-        match self.pinid.get_pin_number() {
-            0b0000 => port.registers.moder.modify(MODER::MODER0.val(mode as u32)),
-            0b0001 => port.registers.moder.modify(MODER::MODER1.val(mode as u32)),
-            0b0010 => port.registers.moder.modify(MODER::MODER2.val(mode as u32)),
-            0b0011 => port.registers.moder.modify(MODER::MODER3.val(mode as u32)),
-            0b0100 => port.registers.moder.modify(MODER::MODER4.val(mode as u32)),
-            0b0101 => port.registers.moder.modify(MODER::MODER5.val(mode as u32)),
-            0b0110 => port.registers.moder.modify(MODER::MODER6.val(mode as u32)),
-            0b0111 => port.registers.moder.modify(MODER::MODER7.val(mode as u32)),
-            0b1000 => port.registers.moder.modify(MODER::MODER8.val(mode as u32)),
-            0b1001 => port.registers.moder.modify(MODER::MODER9.val(mode as u32)),
-            0b1010 => port.registers.moder.modify(MODER::MODER10.val(mode as u32)),
-            0b1011 => port.registers.moder.modify(MODER::MODER11.val(mode as u32)),
-            0b1100 => port.registers.moder.modify(MODER::MODER12.val(mode as u32)),
-            0b1101 => port.registers.moder.modify(MODER::MODER13.val(mode as u32)),
-            0b1110 => port.registers.moder.modify(MODER::MODER14.val(mode as u32)),
-            0b1111 => port.registers.moder.modify(MODER::MODER15.val(mode as u32)),
-            _ => {}
-        }
+        // match self.pinid.get_pin_number() {
+        //     0b0000 => port.registers.moder.modify(MODER::MODER0.val(mode as u32)),
+        //     0b0001 => port.registers.moder.modify(MODER::MODER1.val(mode as u32)),
+        //     0b0010 => port.registers.moder.modify(MODER::MODER2.val(mode as u32)),
+        //     0b0011 => port.registers.moder.modify(MODER::MODER3.val(mode as u32)),
+        //     0b0100 => port.registers.moder.modify(MODER::MODER4.val(mode as u32)),
+        //     0b0101 => port.registers.moder.modify(MODER::MODER5.val(mode as u32)),
+        //     0b0110 => port.registers.moder.modify(MODER::MODER6.val(mode as u32)),
+        //     0b0111 => port.registers.moder.modify(MODER::MODER7.val(mode as u32)),
+        //     0b1000 => port.registers.moder.modify(MODER::MODER8.val(mode as u32)),
+        //     0b1001 => port.registers.moder.modify(MODER::MODER9.val(mode as u32)),
+        //     0b1010 => port.registers.moder.modify(MODER::MODER10.val(mode as u32)),
+        //     0b1011 => port.registers.moder.modify(MODER::MODER11.val(mode as u32)),
+        //     0b1100 => port.registers.moder.modify(MODER::MODER12.val(mode as u32)),
+        //     0b1101 => port.registers.moder.modify(MODER::MODER13.val(mode as u32)),
+        //     0b1110 => port.registers.moder.modify(MODER::MODER14.val(mode as u32)),
+        //     0b1111 => port.registers.moder.modify(MODER::MODER15.val(mode as u32)),
+        //     _ => {}
+        // }
     }
 
     pub fn set_alternate_function(&self, af: AlternateFunction) {
-        let port = self.ports_ref.unwrap_or_panic().get_port(self.pinid); // Unwrap fail =
+        // let port = self.ports_ref.unwrap_or_panic().get_port(self.pinid); // Unwrap fail =
 
-        match self.pinid.get_pin_number() {
-            0b0000 => port.registers.afrl.modify(AFRL::AFRL0.val(af as u32)),
-            0b0001 => port.registers.afrl.modify(AFRL::AFRL1.val(af as u32)),
-            0b0010 => port.registers.afrl.modify(AFRL::AFRL2.val(af as u32)),
-            0b0011 => port.registers.afrl.modify(AFRL::AFRL3.val(af as u32)),
-            0b0100 => port.registers.afrl.modify(AFRL::AFRL4.val(af as u32)),
-            0b0101 => port.registers.afrl.modify(AFRL::AFRL5.val(af as u32)),
-            0b0110 => port.registers.afrl.modify(AFRL::AFRL6.val(af as u32)),
-            0b0111 => port.registers.afrl.modify(AFRL::AFRL7.val(af as u32)),
-            0b1000 => port.registers.afrh.modify(AFRH::AFRH8.val(af as u32)),
-            0b1001 => port.registers.afrh.modify(AFRH::AFRH9.val(af as u32)),
-            0b1010 => port.registers.afrh.modify(AFRH::AFRH10.val(af as u32)),
-            0b1011 => port.registers.afrh.modify(AFRH::AFRH11.val(af as u32)),
-            0b1100 => port.registers.afrh.modify(AFRH::AFRH12.val(af as u32)),
-            0b1101 => port.registers.afrh.modify(AFRH::AFRH13.val(af as u32)),
-            0b1110 => port.registers.afrh.modify(AFRH::AFRH14.val(af as u32)),
-            0b1111 => port.registers.afrh.modify(AFRH::AFRH15.val(af as u32)),
-            _ => {}
-        }
+        // match self.pinid.get_pin_number() {
+        //     0b0000 => port.registers.afrl.modify(AFRL::AFRL0.val(af as u32)),
+        //     0b0001 => port.registers.afrl.modify(AFRL::AFRL1.val(af as u32)),
+        //     0b0010 => port.registers.afrl.modify(AFRL::AFRL2.val(af as u32)),
+        //     0b0011 => port.registers.afrl.modify(AFRL::AFRL3.val(af as u32)),
+        //     0b0100 => port.registers.afrl.modify(AFRL::AFRL4.val(af as u32)),
+        //     0b0101 => port.registers.afrl.modify(AFRL::AFRL5.val(af as u32)),
+        //     0b0110 => port.registers.afrl.modify(AFRL::AFRL6.val(af as u32)),
+        //     0b0111 => port.registers.afrl.modify(AFRL::AFRL7.val(af as u32)),
+        //     0b1000 => port.registers.afrh.modify(AFRH::AFRH8.val(af as u32)),
+        //     0b1001 => port.registers.afrh.modify(AFRH::AFRH9.val(af as u32)),
+        //     0b1010 => port.registers.afrh.modify(AFRH::AFRH10.val(af as u32)),
+        //     0b1011 => port.registers.afrh.modify(AFRH::AFRH11.val(af as u32)),
+        //     0b1100 => port.registers.afrh.modify(AFRH::AFRH12.val(af as u32)),
+        //     0b1101 => port.registers.afrh.modify(AFRH::AFRH13.val(af as u32)),
+        //     0b1110 => port.registers.afrh.modify(AFRH::AFRH14.val(af as u32)),
+        //     0b1111 => port.registers.afrh.modify(AFRH::AFRH15.val(af as u32)),
+        //     _ => {}
+        // }
     }
 
     pub fn get_pinid(&self) -> PinId {
@@ -830,159 +774,159 @@ impl<'a> Pin<'a> {
     }
 
     pub unsafe fn enable_interrupt(&'static self) {
-        let exti_line_id = LineId::from_u8(self.pinid.get_pin_number()).unwrap();
+        // let exti_line_id = LineId::from_u8(self.pinid.get_pin_number()).unwrap();
 
-        self.exti.associate_line_gpiopin(exti_line_id, self);
-    }
-
-    pub fn set_exti_lineid(&self, lineid: exti::LineId) {
-        self.exti_lineid.set(lineid);
+        // self.exti.associate_line_gpiopin(exti_line_id, self);
     }
 
     fn set_mode_output_pushpull(&self) {
-        let port = self.ports_ref.unwrap_or_panic().get_port(self.pinid); // Unwrap fail =
+        // let port = self.ports_ref.unwrap_or_panic().get_port(self.pinid); // Unwrap fail =
 
-        match self.pinid.get_pin_number() {
-            0b0000 => port.registers.otyper.modify(OTYPER::OT0::CLEAR),
-            0b0001 => port.registers.otyper.modify(OTYPER::OT1::CLEAR),
-            0b0010 => port.registers.otyper.modify(OTYPER::OT2::CLEAR),
-            0b0011 => port.registers.otyper.modify(OTYPER::OT3::CLEAR),
-            0b0100 => port.registers.otyper.modify(OTYPER::OT4::CLEAR),
-            0b0101 => port.registers.otyper.modify(OTYPER::OT5::CLEAR),
-            0b0110 => port.registers.otyper.modify(OTYPER::OT6::CLEAR),
-            0b0111 => port.registers.otyper.modify(OTYPER::OT7::CLEAR),
-            0b1000 => port.registers.otyper.modify(OTYPER::OT8::CLEAR),
-            0b1001 => port.registers.otyper.modify(OTYPER::OT9::CLEAR),
-            0b1010 => port.registers.otyper.modify(OTYPER::OT10::CLEAR),
-            0b1011 => port.registers.otyper.modify(OTYPER::OT11::CLEAR),
-            0b1100 => port.registers.otyper.modify(OTYPER::OT12::CLEAR),
-            0b1101 => port.registers.otyper.modify(OTYPER::OT13::CLEAR),
-            0b1110 => port.registers.otyper.modify(OTYPER::OT14::CLEAR),
-            0b1111 => port.registers.otyper.modify(OTYPER::OT15::CLEAR),
-            _ => {}
-        }
+        // match self.pinid.get_pin_number() {
+        //     0b0000 => port.registers.otyper.modify(OTYPER::OT0::CLEAR),
+        //     0b0001 => port.registers.otyper.modify(OTYPER::OT1::CLEAR),
+        //     0b0010 => port.registers.otyper.modify(OTYPER::OT2::CLEAR),
+        //     0b0011 => port.registers.otyper.modify(OTYPER::OT3::CLEAR),
+        //     0b0100 => port.registers.otyper.modify(OTYPER::OT4::CLEAR),
+        //     0b0101 => port.registers.otyper.modify(OTYPER::OT5::CLEAR),
+        //     0b0110 => port.registers.otyper.modify(OTYPER::OT6::CLEAR),
+        //     0b0111 => port.registers.otyper.modify(OTYPER::OT7::CLEAR),
+        //     0b1000 => port.registers.otyper.modify(OTYPER::OT8::CLEAR),
+        //     0b1001 => port.registers.otyper.modify(OTYPER::OT9::CLEAR),
+        //     0b1010 => port.registers.otyper.modify(OTYPER::OT10::CLEAR),
+        //     0b1011 => port.registers.otyper.modify(OTYPER::OT11::CLEAR),
+        //     0b1100 => port.registers.otyper.modify(OTYPER::OT12::CLEAR),
+        //     0b1101 => port.registers.otyper.modify(OTYPER::OT13::CLEAR),
+        //     0b1110 => port.registers.otyper.modify(OTYPER::OT14::CLEAR),
+        //     0b1111 => port.registers.otyper.modify(OTYPER::OT15::CLEAR),
+        //     _ => {}
+        // }
     }
 
     fn get_pullup_pulldown(&self) -> PullUpPullDown {
-        let port = self.ports_ref.unwrap_or_panic().get_port(self.pinid); // Unwrap fail =
+        // let port = self.ports_ref.unwrap_or_panic().get_port(self.pinid); // Unwrap fail =
 
-        let val = match self.pinid.get_pin_number() {
-            0b0000 => port.registers.pupdr.read(PUPDR::PUPDR0),
-            0b0001 => port.registers.pupdr.read(PUPDR::PUPDR1),
-            0b0010 => port.registers.pupdr.read(PUPDR::PUPDR2),
-            0b0011 => port.registers.pupdr.read(PUPDR::PUPDR3),
-            0b0100 => port.registers.pupdr.read(PUPDR::PUPDR4),
-            0b0101 => port.registers.pupdr.read(PUPDR::PUPDR5),
-            0b0110 => port.registers.pupdr.read(PUPDR::PUPDR6),
-            0b0111 => port.registers.pupdr.read(PUPDR::PUPDR7),
-            0b1000 => port.registers.pupdr.read(PUPDR::PUPDR8),
-            0b1001 => port.registers.pupdr.read(PUPDR::PUPDR9),
-            0b1010 => port.registers.pupdr.read(PUPDR::PUPDR10),
-            0b1011 => port.registers.pupdr.read(PUPDR::PUPDR11),
-            0b1100 => port.registers.pupdr.read(PUPDR::PUPDR12),
-            0b1101 => port.registers.pupdr.read(PUPDR::PUPDR13),
-            0b1110 => port.registers.pupdr.read(PUPDR::PUPDR14),
-            0b1111 => port.registers.pupdr.read(PUPDR::PUPDR15),
-            _ => 0,
-        };
+        // let val = match self.pinid.get_pin_number() {
+        //     0b0000 => port.registers.pupdr.read(PUPDR::PUPDR0),
+        //     0b0001 => port.registers.pupdr.read(PUPDR::PUPDR1),
+        //     0b0010 => port.registers.pupdr.read(PUPDR::PUPDR2),
+        //     0b0011 => port.registers.pupdr.read(PUPDR::PUPDR3),
+        //     0b0100 => port.registers.pupdr.read(PUPDR::PUPDR4),
+        //     0b0101 => port.registers.pupdr.read(PUPDR::PUPDR5),
+        //     0b0110 => port.registers.pupdr.read(PUPDR::PUPDR6),
+        //     0b0111 => port.registers.pupdr.read(PUPDR::PUPDR7),
+        //     0b1000 => port.registers.pupdr.read(PUPDR::PUPDR8),
+        //     0b1001 => port.registers.pupdr.read(PUPDR::PUPDR9),
+        //     0b1010 => port.registers.pupdr.read(PUPDR::PUPDR10),
+        //     0b1011 => port.registers.pupdr.read(PUPDR::PUPDR11),
+        //     0b1100 => port.registers.pupdr.read(PUPDR::PUPDR12),
+        //     0b1101 => port.registers.pupdr.read(PUPDR::PUPDR13),
+        //     0b1110 => port.registers.pupdr.read(PUPDR::PUPDR14),
+        //     0b1111 => port.registers.pupdr.read(PUPDR::PUPDR15),
+        //     _ => 0,
+        // };
 
-        PullUpPullDown::from_u32(val).unwrap_or(PullUpPullDown::NoPullUpPullDown)
+        // PullUpPullDown::from_u32(val).unwrap_or(PullUpPullDown::NoPullUpPullDown)
+
+        PullUpPullDown::from_u32(0).unwrap_or(PullUpPullDown::NoPullUpPullDown)
     }
 
     fn set_pullup_pulldown(&self, pupd: PullUpPullDown) {
-        let port = self.ports_ref.unwrap_or_panic().get_port(self.pinid); // Unwrap fail =
+        // let port = self.ports_ref.unwrap_or_panic().get_port(self.pinid); // Unwrap fail =
 
-        match self.pinid.get_pin_number() {
-            0b0000 => port.registers.pupdr.modify(PUPDR::PUPDR0.val(pupd as u32)),
-            0b0001 => port.registers.pupdr.modify(PUPDR::PUPDR1.val(pupd as u32)),
-            0b0010 => port.registers.pupdr.modify(PUPDR::PUPDR2.val(pupd as u32)),
-            0b0011 => port.registers.pupdr.modify(PUPDR::PUPDR3.val(pupd as u32)),
-            0b0100 => port.registers.pupdr.modify(PUPDR::PUPDR4.val(pupd as u32)),
-            0b0101 => port.registers.pupdr.modify(PUPDR::PUPDR5.val(pupd as u32)),
-            0b0110 => port.registers.pupdr.modify(PUPDR::PUPDR6.val(pupd as u32)),
-            0b0111 => port.registers.pupdr.modify(PUPDR::PUPDR7.val(pupd as u32)),
-            0b1000 => port.registers.pupdr.modify(PUPDR::PUPDR8.val(pupd as u32)),
-            0b1001 => port.registers.pupdr.modify(PUPDR::PUPDR9.val(pupd as u32)),
-            0b1010 => port.registers.pupdr.modify(PUPDR::PUPDR10.val(pupd as u32)),
-            0b1011 => port.registers.pupdr.modify(PUPDR::PUPDR11.val(pupd as u32)),
-            0b1100 => port.registers.pupdr.modify(PUPDR::PUPDR12.val(pupd as u32)),
-            0b1101 => port.registers.pupdr.modify(PUPDR::PUPDR13.val(pupd as u32)),
-            0b1110 => port.registers.pupdr.modify(PUPDR::PUPDR14.val(pupd as u32)),
-            0b1111 => port.registers.pupdr.modify(PUPDR::PUPDR15.val(pupd as u32)),
-            _ => {}
-        }
+        // match self.pinid.get_pin_number() {
+        //     0b0000 => port.registers.pupdr.modify(PUPDR::PUPDR0.val(pupd as u32)),
+        //     0b0001 => port.registers.pupdr.modify(PUPDR::PUPDR1.val(pupd as u32)),
+        //     0b0010 => port.registers.pupdr.modify(PUPDR::PUPDR2.val(pupd as u32)),
+        //     0b0011 => port.registers.pupdr.modify(PUPDR::PUPDR3.val(pupd as u32)),
+        //     0b0100 => port.registers.pupdr.modify(PUPDR::PUPDR4.val(pupd as u32)),
+        //     0b0101 => port.registers.pupdr.modify(PUPDR::PUPDR5.val(pupd as u32)),
+        //     0b0110 => port.registers.pupdr.modify(PUPDR::PUPDR6.val(pupd as u32)),
+        //     0b0111 => port.registers.pupdr.modify(PUPDR::PUPDR7.val(pupd as u32)),
+        //     0b1000 => port.registers.pupdr.modify(PUPDR::PUPDR8.val(pupd as u32)),
+        //     0b1001 => port.registers.pupdr.modify(PUPDR::PUPDR9.val(pupd as u32)),
+        //     0b1010 => port.registers.pupdr.modify(PUPDR::PUPDR10.val(pupd as u32)),
+        //     0b1011 => port.registers.pupdr.modify(PUPDR::PUPDR11.val(pupd as u32)),
+        //     0b1100 => port.registers.pupdr.modify(PUPDR::PUPDR12.val(pupd as u32)),
+        //     0b1101 => port.registers.pupdr.modify(PUPDR::PUPDR13.val(pupd as u32)),
+        //     0b1110 => port.registers.pupdr.modify(PUPDR::PUPDR14.val(pupd as u32)),
+        //     0b1111 => port.registers.pupdr.modify(PUPDR::PUPDR15.val(pupd as u32)),
+        //     _ => {}
+        // }
     }
 
     fn set_output_high(&self) {
-        let port = self.ports_ref.unwrap_or_panic().get_port(self.pinid); // Unwrap fail =
+        // let port = self.ports_ref.unwrap_or_panic().get_port(self.pinid); // Unwrap fail =
 
-        match self.pinid.get_pin_number() {
-            0b0000 => port.registers.bsrr.write(BSRR::BS0::SET),
-            0b0001 => port.registers.bsrr.write(BSRR::BS1::SET),
-            0b0010 => port.registers.bsrr.write(BSRR::BS2::SET),
-            0b0011 => port.registers.bsrr.write(BSRR::BS3::SET),
-            0b0100 => port.registers.bsrr.write(BSRR::BS4::SET),
-            0b0101 => port.registers.bsrr.write(BSRR::BS5::SET),
-            0b0110 => port.registers.bsrr.write(BSRR::BS6::SET),
-            0b0111 => port.registers.bsrr.write(BSRR::BS7::SET),
-            0b1000 => port.registers.bsrr.write(BSRR::BS8::SET),
-            0b1001 => port.registers.bsrr.write(BSRR::BS9::SET),
-            0b1010 => port.registers.bsrr.write(BSRR::BS10::SET),
-            0b1011 => port.registers.bsrr.write(BSRR::BS11::SET),
-            0b1100 => port.registers.bsrr.write(BSRR::BS12::SET),
-            0b1101 => port.registers.bsrr.write(BSRR::BS13::SET),
-            0b1110 => port.registers.bsrr.write(BSRR::BS14::SET),
-            0b1111 => port.registers.bsrr.write(BSRR::BS15::SET),
-            _ => {}
-        }
+        // match self.pinid.get_pin_number() {
+        //     0b0000 => port.registers.bsrr.write(BSRR::BS0::SET),
+        //     0b0001 => port.registers.bsrr.write(BSRR::BS1::SET),
+        //     0b0010 => port.registers.bsrr.write(BSRR::BS2::SET),
+        //     0b0011 => port.registers.bsrr.write(BSRR::BS3::SET),
+        //     0b0100 => port.registers.bsrr.write(BSRR::BS4::SET),
+        //     0b0101 => port.registers.bsrr.write(BSRR::BS5::SET),
+        //     0b0110 => port.registers.bsrr.write(BSRR::BS6::SET),
+        //     0b0111 => port.registers.bsrr.write(BSRR::BS7::SET),
+        //     0b1000 => port.registers.bsrr.write(BSRR::BS8::SET),
+        //     0b1001 => port.registers.bsrr.write(BSRR::BS9::SET),
+        //     0b1010 => port.registers.bsrr.write(BSRR::BS10::SET),
+        //     0b1011 => port.registers.bsrr.write(BSRR::BS11::SET),
+        //     0b1100 => port.registers.bsrr.write(BSRR::BS12::SET),
+        //     0b1101 => port.registers.bsrr.write(BSRR::BS13::SET),
+        //     0b1110 => port.registers.bsrr.write(BSRR::BS14::SET),
+        //     0b1111 => port.registers.bsrr.write(BSRR::BS15::SET),
+        //     _ => {}
+        // }
     }
 
     fn set_output_low(&self) {
-        let port = self.ports_ref.unwrap_or_panic().get_port(self.pinid); // Unwrap fail =
+        // let port = self.ports_ref.unwrap_or_panic().get_port(self.pinid); // Unwrap fail =
 
-        match self.pinid.get_pin_number() {
-            0b0000 => port.registers.bsrr.write(BSRR::BR0::SET),
-            0b0001 => port.registers.bsrr.write(BSRR::BR1::SET),
-            0b0010 => port.registers.bsrr.write(BSRR::BR2::SET),
-            0b0011 => port.registers.bsrr.write(BSRR::BR3::SET),
-            0b0100 => port.registers.bsrr.write(BSRR::BR4::SET),
-            0b0101 => port.registers.bsrr.write(BSRR::BR5::SET),
-            0b0110 => port.registers.bsrr.write(BSRR::BR6::SET),
-            0b0111 => port.registers.bsrr.write(BSRR::BR7::SET),
-            0b1000 => port.registers.bsrr.write(BSRR::BR8::SET),
-            0b1001 => port.registers.bsrr.write(BSRR::BR9::SET),
-            0b1010 => port.registers.bsrr.write(BSRR::BR10::SET),
-            0b1011 => port.registers.bsrr.write(BSRR::BR11::SET),
-            0b1100 => port.registers.bsrr.write(BSRR::BR12::SET),
-            0b1101 => port.registers.bsrr.write(BSRR::BR13::SET),
-            0b1110 => port.registers.bsrr.write(BSRR::BR14::SET),
-            0b1111 => port.registers.bsrr.write(BSRR::BR15::SET),
-            _ => {}
-        }
+        // match self.pinid.get_pin_number() {
+        //     0b0000 => port.registers.bsrr.write(BSRR::BR0::SET),
+        //     0b0001 => port.registers.bsrr.write(BSRR::BR1::SET),
+        //     0b0010 => port.registers.bsrr.write(BSRR::BR2::SET),
+        //     0b0011 => port.registers.bsrr.write(BSRR::BR3::SET),
+        //     0b0100 => port.registers.bsrr.write(BSRR::BR4::SET),
+        //     0b0101 => port.registers.bsrr.write(BSRR::BR5::SET),
+        //     0b0110 => port.registers.bsrr.write(BSRR::BR6::SET),
+        //     0b0111 => port.registers.bsrr.write(BSRR::BR7::SET),
+        //     0b1000 => port.registers.bsrr.write(BSRR::BR8::SET),
+        //     0b1001 => port.registers.bsrr.write(BSRR::BR9::SET),
+        //     0b1010 => port.registers.bsrr.write(BSRR::BR10::SET),
+        //     0b1011 => port.registers.bsrr.write(BSRR::BR11::SET),
+        //     0b1100 => port.registers.bsrr.write(BSRR::BR12::SET),
+        //     0b1101 => port.registers.bsrr.write(BSRR::BR13::SET),
+        //     0b1110 => port.registers.bsrr.write(BSRR::BR14::SET),
+        //     0b1111 => port.registers.bsrr.write(BSRR::BR15::SET),
+        //     _ => {}
+        // }
     }
 
     fn is_output_high(&self) -> bool {
-        let port = self.ports_ref.unwrap_or_panic().get_port(self.pinid); // Unwrap fail =
+        // let port = self.ports_ref.unwrap_or_panic().get_port(self.pinid); // Unwrap fail =
 
-        match self.pinid.get_pin_number() {
-            0b0000 => port.registers.odr.is_set(ODR::ODR0),
-            0b0001 => port.registers.odr.is_set(ODR::ODR1),
-            0b0010 => port.registers.odr.is_set(ODR::ODR2),
-            0b0011 => port.registers.odr.is_set(ODR::ODR3),
-            0b0100 => port.registers.odr.is_set(ODR::ODR4),
-            0b0101 => port.registers.odr.is_set(ODR::ODR5),
-            0b0110 => port.registers.odr.is_set(ODR::ODR6),
-            0b0111 => port.registers.odr.is_set(ODR::ODR7),
-            0b1000 => port.registers.odr.is_set(ODR::ODR8),
-            0b1001 => port.registers.odr.is_set(ODR::ODR9),
-            0b1010 => port.registers.odr.is_set(ODR::ODR10),
-            0b1011 => port.registers.odr.is_set(ODR::ODR11),
-            0b1100 => port.registers.odr.is_set(ODR::ODR12),
-            0b1101 => port.registers.odr.is_set(ODR::ODR13),
-            0b1110 => port.registers.odr.is_set(ODR::ODR14),
-            0b1111 => port.registers.odr.is_set(ODR::ODR15),
-            _ => false,
-        }
+        // match self.pinid.get_pin_number() {
+        //     0b0000 => port.registers.odr.is_set(ODR::ODR0),
+        //     0b0001 => port.registers.odr.is_set(ODR::ODR1),
+        //     0b0010 => port.registers.odr.is_set(ODR::ODR2),
+        //     0b0011 => port.registers.odr.is_set(ODR::ODR3),
+        //     0b0100 => port.registers.odr.is_set(ODR::ODR4),
+        //     0b0101 => port.registers.odr.is_set(ODR::ODR5),
+        //     0b0110 => port.registers.odr.is_set(ODR::ODR6),
+        //     0b0111 => port.registers.odr.is_set(ODR::ODR7),
+        //     0b1000 => port.registers.odr.is_set(ODR::ODR8),
+        //     0b1001 => port.registers.odr.is_set(ODR::ODR9),
+        //     0b1010 => port.registers.odr.is_set(ODR::ODR10),
+        //     0b1011 => port.registers.odr.is_set(ODR::ODR11),
+        //     0b1100 => port.registers.odr.is_set(ODR::ODR12),
+        //     0b1101 => port.registers.odr.is_set(ODR::ODR13),
+        //     0b1110 => port.registers.odr.is_set(ODR::ODR14),
+        //     0b1111 => port.registers.odr.is_set(ODR::ODR15),
+        //     _ => false,
+        // }
+
+        true
     }
 
     fn toggle_output(&self) -> bool {
@@ -996,27 +940,29 @@ impl<'a> Pin<'a> {
     }
 
     fn read_input(&self) -> bool {
-        let port = self.ports_ref.unwrap_or_panic().get_port(self.pinid); // Unwrap fail =
+        // let port = self.ports_ref.unwrap_or_panic().get_port(self.pinid); // Unwrap fail =
 
-        match self.pinid.get_pin_number() {
-            0b0000 => port.registers.idr.is_set(IDR::IDR0),
-            0b0001 => port.registers.idr.is_set(IDR::IDR1),
-            0b0010 => port.registers.idr.is_set(IDR::IDR2),
-            0b0011 => port.registers.idr.is_set(IDR::IDR3),
-            0b0100 => port.registers.idr.is_set(IDR::IDR4),
-            0b0101 => port.registers.idr.is_set(IDR::IDR5),
-            0b0110 => port.registers.idr.is_set(IDR::IDR6),
-            0b0111 => port.registers.idr.is_set(IDR::IDR7),
-            0b1000 => port.registers.idr.is_set(IDR::IDR8),
-            0b1001 => port.registers.idr.is_set(IDR::IDR9),
-            0b1010 => port.registers.idr.is_set(IDR::IDR10),
-            0b1011 => port.registers.idr.is_set(IDR::IDR11),
-            0b1100 => port.registers.idr.is_set(IDR::IDR12),
-            0b1101 => port.registers.idr.is_set(IDR::IDR13),
-            0b1110 => port.registers.idr.is_set(IDR::IDR14),
-            0b1111 => port.registers.idr.is_set(IDR::IDR15),
-            _ => false,
-        }
+        // match self.pinid.get_pin_number() {
+        //     0b0000 => port.registers.idr.is_set(IDR::IDR0),
+        //     0b0001 => port.registers.idr.is_set(IDR::IDR1),
+        //     0b0010 => port.registers.idr.is_set(IDR::IDR2),
+        //     0b0011 => port.registers.idr.is_set(IDR::IDR3),
+        //     0b0100 => port.registers.idr.is_set(IDR::IDR4),
+        //     0b0101 => port.registers.idr.is_set(IDR::IDR5),
+        //     0b0110 => port.registers.idr.is_set(IDR::IDR6),
+        //     0b0111 => port.registers.idr.is_set(IDR::IDR7),
+        //     0b1000 => port.registers.idr.is_set(IDR::IDR8),
+        //     0b1001 => port.registers.idr.is_set(IDR::IDR9),
+        //     0b1010 => port.registers.idr.is_set(IDR::IDR10),
+        //     0b1011 => port.registers.idr.is_set(IDR::IDR11),
+        //     0b1100 => port.registers.idr.is_set(IDR::IDR12),
+        //     0b1101 => port.registers.idr.is_set(IDR::IDR13),
+        //     0b1110 => port.registers.idr.is_set(IDR::IDR14),
+        //     0b1111 => port.registers.idr.is_set(IDR::IDR15),
+        //     _ => false,
+        // }
+
+        true
     }
 }
 
@@ -1114,46 +1060,9 @@ impl hil::gpio::Input for Pin<'_> {
 
 impl<'a> hil::gpio::Interrupt<'a> for Pin<'a> {
     fn enable_interrupts(&self, mode: hil::gpio::InterruptEdge) {
-        unsafe {
-            atomic(|| {
-                self.exti_lineid.map(|lineid| {
-                    let l = lineid;
-
-                    // disable the interrupt
-                    self.exti.mask_interrupt(l);
-                    self.exti.clear_pending(l);
-
-                    match mode {
-                        hil::gpio::InterruptEdge::EitherEdge => {
-                            self.exti.select_rising_trigger(l);
-                            self.exti.select_falling_trigger(l);
-                        }
-                        hil::gpio::InterruptEdge::RisingEdge => {
-                            self.exti.select_rising_trigger(l);
-                            self.exti.deselect_falling_trigger(l);
-                        }
-                        hil::gpio::InterruptEdge::FallingEdge => {
-                            self.exti.deselect_rising_trigger(l);
-                            self.exti.select_falling_trigger(l);
-                        }
-                    }
-
-                    self.exti.unmask_interrupt(l);
-                });
-            });
-        }
     }
 
     fn disable_interrupts(&self) {
-        unsafe {
-            atomic(|| {
-                self.exti_lineid.map(|lineid| {
-                    let l = lineid;
-                    self.exti.mask_interrupt(l);
-                    self.exti.clear_pending(l);
-                });
-            });
-        }
     }
 
     fn set_client(&self, client: &'a dyn hil::gpio::Client) {
@@ -1161,7 +1070,6 @@ impl<'a> hil::gpio::Interrupt<'a> for Pin<'a> {
     }
 
     fn is_pending(&self) -> bool {
-        self.exti_lineid
-            .map_or(false, |lineid| self.exti.is_pending(lineid))
+        false
     }
 }

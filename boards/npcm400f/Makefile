@@ -43,11 +43,12 @@ sign:
 	# $(OBJCOPY) --update-section .apps=$(TBF_BIN) $(TARGET_PATH)/release/$(PLATFORM).elf $(TARGET_PATH)/release/$(PLATFORM).elf
 
 	@echo ">> Make binary"
-	# $(OBJCOPY) --output-target=binary $(TARGET_PATH)/release/$(PLATFORM).elf $(TARGET_PATH)/release/$(PLATFORM).bin
+	# $(OBJCOPY) --output-target=binary $(OBJCOPY_FLAGS) $(TARGET_PATH)/release/$(PLATFORM).elf $(TARGET_PATH)/release/$(PLATFORM).bin
 
 	@echo ">> dump elf"
 	# $(OBJDUMP) -r -x $(TARGET_PATH)/release/$(PLATFORM).elf > /home/alan/workspace/tock/objdump.txt
-	$(OBJDUMP) --disassemble-all --source --section-headers --demangle $(TARGET_PATH)/release/$(PLATFORM).elf > /home/alan/workspace/tock/objdump.txt
+	# $(OBJDUMP) --disassemble-all --source --section-headers --demangle $(TARGET_PATH)/release/$(PLATFORM).elf > /home/alan/workspace/tock/objdump.txt
+	$(OBJDUMP) -r -x --source --section-headers --demangle $(TARGET_PATH)/release/$(PLATFORM).elf > /home/alan/workspace/tock/objdump.txt
 
 	@echo ">> Signing the binary"
 	${PYTHON_EXECUTABLE} $(POST_BUILD_SCRIPT) -i $(TARGET_PATH)/release/$(PLATFORM).bin -o $(SIGNED_IMG_PATH).bin -v

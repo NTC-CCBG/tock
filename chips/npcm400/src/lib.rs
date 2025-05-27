@@ -18,14 +18,15 @@ pub mod nvic;
 // pub mod dma;
 // pub mod exti;
 // pub mod flash;
-// pub mod gpio;
+pub mod gpio;
 // pub mod i2c;
 // pub mod rcc;
 // pub mod spi;
 // pub mod syscfg;
 // pub mod tim2;
 pub mod uart;
-// pub mod wdt;
+// pub mod miwu;
+// pub mod twd;
 pub mod clock;
 pub mod scfg;
 
@@ -158,4 +159,16 @@ pub unsafe fn init() {
     cortexm4f::nvic::clear_all_pending();
     scb::set_vector_table_offset(BASE_VECTORS.as_ptr().cast::<()>());
     cortexm4f::nvic::enable_all();
+
+    // Set BASEPRI to 0 to ensure that SVC exceptions are not masked and always have
+    // a higher priority than HardFault.
+    use core::arch::asm;
+    asm!(
+        "cpsid i
+        mov r0, 0
+        msr basepri, r0
+        dsb
+        isb
+        cpsie i"
+    );
 }
