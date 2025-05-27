@@ -1,33 +1,47 @@
 {
-    "version": "0.2.0",
-    "configurations": [
-        {
-            "name": "nRF52-DK",
-            "type": "gdb",
-            "request": "attach",
-            "executable": "${workspaceRoot}/boards/nrf52dk/target/thumbv7em-none-eabi/release/nrf52dk",
-            "target": "localhost:2331",
-            "remote": true,
-            "cwd": "${workspaceRoot}",
-            "gdbpath": "arm-none-eabi-gdb",
-            "autorun": [
-                "monitor reset",
-                "monitor speed auto",
-                "b initialize_ram_jump_to_main"
-            ]
-        },
-        {
-            "name": "MSP432 Cortex Debug",
-            "type": "cortex-debug",
-            "servertype": "openocd",
-            "request": "launch",
-            "executable": "${workspaceRoot}/target/thumbv7em-none-eabi/debug/msp-exp432p401r.elf",
-            "cwd": "${workspaceRoot}",
-            "svdFile": "${workspaceRoot}/boards/msp_exp432p401r/msp432.svd",
-            "runToMain": true,
-            "configFiles": [
-                "${workspaceRoot}/boards/msp_exp432p401r/openocd.cfg",
-            ]
-        }
-    ]
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "NPCM400",
+      "type": "gdb",
+      "request": "attach",
+      // "executable": "${workspaceRoot}/target/thumbv7em-none-eabi/release/npcm400f.elf",
+      "executable": "C://TYANG1//Workspace//openbic//npcm400f.elf",
+      "target": "localhost:2331",
+      "remote": true,
+      "cwd": "${workspaceRoot}",
+      "gdbpath": "arm-none-eabi-gdb",
+      "autorun": [
+        "monitor reset",
+        "monitor speed auto",
+        // "b initialize_ram_jump_to_main"
+      ]
+    },
+    {
+      "name": "nRF52-DK",
+      "type": "gdb",
+      "request": "attach",
+      "executable": "${workspaceRoot}/boards/nrf52dk/target/thumbv7em-none-eabi/release/nrf52dk",
+      "target": "localhost:2331",
+      "remote": true,
+      "cwd": "${workspaceRoot}",
+      "gdbpath": "arm-none-eabi-gdb",
+      "autorun": [
+        "monitor reset",
+        "monitor speed auto",
+        "b initialize_ram_jump_to_main"
+      ]
+    },
+    {
+      "name": "MSP432 Cortex Debug",
+      "type": "cortex-debug",
+      "servertype": "openocd",
+      "request": "launch",
+      "executable": "${workspaceRoot}/target/thumbv7em-none-eabi/debug/msp-exp432p401r.elf",
+      "cwd": "${workspaceRoot}",
+      "svdFile": "${workspaceRoot}/boards/msp_exp432p401r/msp432.svd",
+      "runToMain": true,
+      "configFiles": ["${workspaceRoot}/boards/msp_exp432p401r/openocd.cfg"]
+    }
+  ]
 }
