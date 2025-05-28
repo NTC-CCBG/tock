@@ -343,9 +343,9 @@ unsafe fn start() -> (
     // PLATFORM SETUP, SCHEDULER, AND START KERNEL LOOP
     //----------------------------------------------------------------------
 
-    // let process_printer = components::process_printer::ProcessPrinterTextComponent::new()
-    //     .finalize(components::process_printer_text_component_static!());
-    // PROCESS_PRINTER = Some(process_printer);
+    let process_printer = components::process_printer::ProcessPrinterTextComponent::new()
+        .finalize(components::process_printer_text_component_static!());
+    PROCESS_PRINTER = Some(process_printer);
 
     // PROCESS CONSOLE
     // let process_console = components::process_console::ProcessConsoleComponent::new(
