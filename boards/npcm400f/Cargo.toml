@@ -12,7 +12,7 @@ edition.workspace = true
 [dependencies]
 components = { path = "../components" }
 cortexm4 = { path = "../../arch/cortex-m4" }
-kernel = { path = "../../kernel" }
+kernel = { path = "../../kernel", features = ["debug_load_processes", "trace_syscalls"] }
 npcm400 = { path = "../../chips/npcm400" }
 
 capsules-core = { path = "../../capsules/core" }
