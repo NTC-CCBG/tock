@@ -213,8 +213,9 @@ unsafe fn start() -> (
     )
     .finalize(components::console_component_static!());
     // Create the debugger object that handles calls to `debug!()`.
+    const DEBUG_BUFFER_KB: usize = 4;
     components::debug_writer::DebugWriterComponent::new(uart_mux)
-        .finalize(components::debug_writer_component_static!());
+        .finalize(components::debug_writer_component_static!(DEBUG_BUFFER_KB));
 
     //----------------------------------------------------------------------
     // Alarm
