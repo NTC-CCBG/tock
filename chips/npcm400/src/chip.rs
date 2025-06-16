@@ -21,6 +21,7 @@ pub struct Npcm400DefaultPeripherals<'a> {
     pub clock: crate::clock::Clock,
     pub scfg: crate::scfg::Scfg,
     pub uart1: crate::uart::Uart<'a>,
+    pub wdt: crate::twd::Wdg<'a>,
 }
 
 impl Npcm400DefaultPeripherals<'_> {
@@ -29,10 +30,12 @@ impl Npcm400DefaultPeripherals<'_> {
         let uart_clock = source_clock
             .get_clock_source(crate::clock::HighClocks::UART)
             .unwrap();
+        let wdt0 = crate::twd::Wdg::new();
         Self {
             clock: source_clock,
             scfg: crate::scfg::Scfg::new(),
             uart1: crate::uart::Uart::new_uart1(uart_clock),
+            wdt: wdt0,
         }
     }
 
@@ -49,6 +52,7 @@ impl InterruptService for Npcm400DefaultPeripherals<'_> {
         match interrupt {
             // nvic::ADC => self.adc.handle_interrupt(),
             nvic::CR_UART1 => self.uart1.handle_interrupt(),
+            nvic::MSWC_T0OUT => self.wdt.handle_interrupt(),
             _ => return false,
         }
         true

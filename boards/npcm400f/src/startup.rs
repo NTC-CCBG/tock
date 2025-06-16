@@ -9,6 +9,7 @@
 
 use kernel::component::Component;
 // use npcm400::gpio::Pin;
+use npcm400::twd::WatchdogClient;
 
 pub struct Npcm400fClockComponent<'a> {
     clock: &'a npcm400::clock::Clock,
@@ -77,5 +78,32 @@ impl Component for Npcm400fUartChannelComponent {
     fn finalize(self, _s: Self::StaticInput) -> Self::Output {
         self.uart1.initialize(115200);
         self.uart1
+    }
+}
+
+pub struct Npcm400fWdtComponent {
+    wdt: &'static npcm400::twd::Wdg<'static>,
+}
+
+impl Npcm400fWdtComponent {
+    pub fn new(wdt: &'static npcm400::twd::Wdg<'static>) -> Self {
+        Self { wdt }
+    }
+}
+
+impl Component for Npcm400fWdtComponent {
+    type StaticInput = ();
+    type Output = &'static npcm400::twd::Wdg<'static>;
+
+    fn finalize(self, _s: Self::StaticInput) -> Self::Output {
+        // Create a static client instance
+
+        // Set the client
+        // self.wdt.set_client(client);
+
+        // Initialize the watchdog
+        self.wdt.finalize();
+
+        self.wdt
     }
 }

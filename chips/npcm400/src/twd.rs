@@ -6,6 +6,7 @@
 
 use core::cell::Cell;
 use kernel::platform::chip::ClockInterface;
+use kernel::utilities::cells::OptionalCell;
 use kernel::utilities::registers::interfaces::{ReadWriteable, Readable, Writeable};
 use kernel::utilities::registers::{register_bitfields, register_structs, ReadWrite};
 use kernel::utilities::StaticRef;
@@ -16,14 +17,20 @@ const TWD_BASE: StaticRef<TwdRegisters> =
 register_structs! {
     TwdRegisters {
         (0x000 => twcfg: ReadWrite<u8, Twcfg::Register>), // Timer and Watchdog Configuration
+        (0x001 => _reserved0: u8),
         (0x002 => twcp: ReadWrite<u8, Twcp::Register>), // Timer and Watchdog Clock Prescaler
-        (0x004 => twdt0: ReadWrite<u16>), // TWD Timer 0 Counter Preset
-        (0x006 => t0csr: ReadWrite<u8>), // TWDT0 Control and Status
-        (0x008 => wdcnt: ReadWrite<u8>), // Watchdog Count
-        (0x00A => wdsdm: ReadWrite<u8>), // Watchdog Service Data Match
-        (0x00C => twmt0: ReadWrite<u16>), // TWD Timer 0 Counter
-        (0x00E => twmwd: ReadWrite<u8>), // Watchdog Counter
-        (0x010 => wdcp: ReadWrite<u8>), // Watchdog Clock Prescaler
+        (0x003 => _reserved1: u8),
+        (0x004 => twdt0: ReadWrite<u16, Twdt0::Register>), // TWD Timer 0 Counter Preset
+        (0x006 => t0csr: ReadWrite<u8, T0csr::Register>), // TWDT0 Control and Status
+        (0x007 => _reserved2: u8),
+        (0x008 => wdcnt: ReadWrite<u8, Wdcnt::Register>), // Watchdog Count
+        (0x009 => _reserved3: u8),
+        (0x00A => wdsdm: ReadWrite<u8, Wdsdm::Register>), // Watchdog Service Data Match
+        (0x00B => _reserved4: u8),
+        (0x00C => twmt0: ReadWrite<u16, Twmt0::Register>), // TWD Timer 0 Counter
+        (0x00E => twmwd: ReadWrite<u8, Twmwd::Register>), // Watchdog Counter
+        (0x00F => _reserved5: u8),
+        (0x010 => wdcp: ReadWrite<u8, Wdcp::Register>), // Watchdog Clock Prescaler
         (0x011 => @END),
     }
 }
@@ -75,9 +82,14 @@ register_bitfields![u16,
     ],
 ];
 
+pub trait WatchdogClient {
+    fn watchdog_fired(&self);
+}
+
 pub struct Wdg<'a> {
     registers: StaticRef<TwdRegisters>,
     enabled: Cell<bool>,
+    client: OptionalCell<&'a dyn WatchdogClient>,
 }
 
 impl<'a> Wdg<'a> {
@@ -85,53 +97,31 @@ impl<'a> Wdg<'a> {
         Self {
             registers: TWD_BASE,
             enabled: Cell::new(false),
+            client: OptionalCell::empty(),
         }
+    }
+
+    pub fn set_client(&self, client: &'a dyn WatchdogClient) {
+        self.client.set(client);
     }
 
     pub fn enable(&self) {
         self.enabled.set(true);
     }
 
-    fn set_window(&self, value: u32) {
-        // Set the window value to the biggest possible one.
-        self.registers.cfr.modify(Config::W.val(value));
-    }
+    fn set_window(&self, value: u32) {}
 
     /// Modifies the time base of the prescaler.
-    /// 0 - decrements the watchdog every clock cycle
-    /// 1 - decrements the watchdog every 2nd clock cycle
-    /// 2 - decrements the watchdog every 4th clock cycle
-    /// 3 - decrements the watchdog every 8th clock cycle
-    fn set_prescaler(&self, time_base: u8) {
-        match time_base {
-            0 => self.registers.cfr.modify(Config::WDGTB::DIVONE),
-            1 => self.registers.cfr.modify(Config::WDGTB::DIVTWO),
-            2 => self.registers.cfr.modify(Config::WDGTB::DIVFOUR),
-            3 => self.registers.cfr.modify(Config::WDGTB::DIVEIGHT),
-            _ => {}
-        }
-    }
+    fn set_prescaler(&self, time_base: u8) {}
 
-    pub fn start(&self) {
-        // Enable the APB1 clock for the watchdog.
-        self.clock.enable();
+    pub fn start(&self) {}
 
-        // This disables the window feature. Set this to a value smaller than
-        // 0x7F if you want to enable it.
-        self.set_window(0x7F);
-        self.set_prescaler(3);
+    pub fn tickle(&self) {}
 
-        // Set the T[6] bit to avoid a reset when the watchdog is activated.
+    pub fn handle_interrupt(&self) {
+        // This is called when the watchdog timer expires.
+        self.client.map(|client| client.watchdog_fired());
         self.tickle();
-
-        // With the APB1 clock running at 36Mhz we are getting timeout value of
-        // t_WWDG = (1 / 36000) * 4096 * 2^3 * (63 + 1) = 58ms
-        self.registers.cr.modify(Control::WDGA::SET);
-    }
-
-    pub fn tickle(&self) {
-        // Uses 63 as the value the watchdog starts counting from.
-        self.registers.cr.modify(Control::T.val(0x7F));
     }
 
     pub fn finalize(&self) {
@@ -159,7 +149,7 @@ impl<'a> Wdg<'a> {
     }
 }
 
-impl kernel::platform::watchdog::WatchDog for Wdg<'_> {
+impl<'a> kernel::platform::watchdog::WatchDog for Wdg<'a> {
     fn setup(&self) {
         if self.enabled.get() {
             self.start();
@@ -174,13 +164,13 @@ impl kernel::platform::watchdog::WatchDog for Wdg<'_> {
 
     fn suspend(&self) {
         if self.enabled.get() {
-            self.clock.disable();
+            // self.clock.disable();
         }
     }
 
     fn resume(&self) {
         if self.enabled.get() {
-            self.clock.enable();
+            // self.clock.enable();
         }
     }
 }

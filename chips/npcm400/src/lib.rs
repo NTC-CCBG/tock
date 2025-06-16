@@ -26,7 +26,7 @@ pub mod gpio;
 // pub mod tim2;
 pub mod uart;
 // pub mod miwu;
-// pub mod twd;
+pub mod twd;
 pub mod clock;
 pub mod scfg;
 

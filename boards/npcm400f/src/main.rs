@@ -25,13 +25,15 @@ use kernel::hil::gpio::Configure;
 use kernel::hil::gpio::Output;
 use kernel::hil::led::LedHigh;
 use kernel::hil::time::Counter;
+use kernel::platform::watchdog::WatchDog;
 use kernel::platform::{KernelResources, SyscallDriverLookup};
 use kernel::scheduler::round_robin::RoundRobinSched;
 use kernel::{create_capability, debug, static_init};
 use npcm400::chip::Npcm400DefaultPeripherals;
-// use npcm400::wdt;
+use npcm400::twd;
 
 pub mod startup;
+pub use self::startup::Npcm400fWdtComponent;
 pub use self::startup::{
     Npcm400fClockComponent, Npcm400fScfgComponent, Npcm400fUartChannelComponent,
 };
@@ -72,6 +74,7 @@ struct NPCM400F {
 
     scheduler: &'static RoundRobinSched<'static>,
     systick: cortexm4::systick::SysTick,
+    watchdog: &'static twd::Wdg<'static>,
 }
 
 /// Mapping of integer syscalls to objects that implement syscalls.
@@ -98,7 +101,7 @@ impl
     type ProcessFault = ();
     type Scheduler = RoundRobinSched<'static>;
     type SchedulerTimer = cortexm4::systick::SysTick;
-    type WatchDog = ();
+    type WatchDog = twd::Wdg<'static>;
     type ContextSwitchCallback = ();
 
     fn syscall_driver_lookup(&self) -> &Self::SyscallDriverLookup {
@@ -117,8 +120,7 @@ impl
         &self.systick
     }
     fn watchdog(&self) -> &Self::WatchDog {
-        // self.watchdog
-        &()
+        self.watchdog
     }
     fn context_switch_callback(&self) -> &Self::ContextSwitchCallback {
         &()
@@ -135,6 +137,7 @@ unsafe fn set_pin_primary_functions() {
 /// Helper function for miscellaneous peripheral functions
 unsafe fn setup_peripherals() {
     cortexm4::nvic::Nvic::new(npcm400::nvic::CR_UART1).enable();
+    cortexm4::nvic::Nvic::new(npcm400::nvic::MSWC_T0OUT).enable();
 }
 
 /// Main function.
@@ -216,6 +219,15 @@ unsafe fn start() -> (
     const DEBUG_BUFFER_KB: usize = 4;
     components::debug_writer::DebugWriterComponent::new(uart_mux)
         .finalize(components::debug_writer_component_static!(DEBUG_BUFFER_KB));
+
+    //----------------------------------------------------------------------
+    // TWD
+    //----------------------------------------------------------------------
+    // Create and finalize the component
+    let wdt_component = Npcm400fWdtComponent::new(&peripherals.wdt).finalize(());
+
+    // Enable the watchdog
+    wdt_component.enable();
 
     //----------------------------------------------------------------------
     // Alarm
@@ -374,6 +386,7 @@ unsafe fn start() -> (
 
         scheduler,
         systick: cortexm4::systick::SysTick::new_with_calibration(96_000_000),
+        watchdog: &peripherals.wdt,
     };
 
     // // Optional kernel tests
