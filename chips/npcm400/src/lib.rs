@@ -165,7 +165,7 @@ pub unsafe fn init() {
     use core::arch::asm;
     asm!(
         "cpsid i
-        mov r0, 0
+        mov r0, #32
         msr basepri, r0
         dsb
         isb
