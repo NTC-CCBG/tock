@@ -344,18 +344,24 @@ impl<'a> Uart<'a> {
 
         let mut bytes_sent = 0;
         while bytes_sent < capped_size {
-            let tx_available = self.tx_fifo_available() as usize;
-            if tx_available == 0 {
-                // Wait until at least one slot is available
-                continue;
+            // Send one byte at a time, adding \r before \n
+            let byte = tx_data[bytes_sent];
+
+            // Add carriage return before newline for proper terminal output alignment
+            if byte == b'\n' {
+                // Wait for space if needed, then send carriage return
+                while self.tx_fifo_available() == 0 {
+                    // Wait for FIFO space
+                }
+                self.registers.utbuf.set(b'\r');
             }
 
-            // Calculate how many bytes we can send in this iteration
-            let to_send = min(tx_available, capped_size - bytes_sent);
-            for i in 0..to_send {
-                self.registers.utbuf.set(tx_data[bytes_sent + i]);
+            // Wait for space if needed, then send the actual byte
+            while self.tx_fifo_available() == 0 {
+                // Wait for FIFO space
             }
-            bytes_sent += to_send;
+            self.registers.utbuf.set(byte);
+            bytes_sent += 1;
         }
 
         true
