@@ -71,6 +71,10 @@ pub static mut STACK_MEMORY: [u8; 0x1700] = [0; 0x1700];
 struct NPCM400F {
     console: &'static capsules_core::console::Console<'static>,
     ipc: kernel::ipc::IPC<{ NUM_PROCS as u8 }>,
+    alarm: &'static capsules_core::alarm::AlarmDriver<
+        'static,
+        VirtualMuxAlarm<'static, npcm400::itim::Itim<'static>>,
+    >,
 
     scheduler: &'static RoundRobinSched<'static>,
     systick: cortexm4::systick::SysTick,
@@ -85,6 +89,7 @@ impl SyscallDriverLookup for NPCM400F {
     {
         match driver_num {
             capsules_core::console::DRIVER_NUM => f(Some(self.console)),
+            capsules_core::alarm::DRIVER_NUM => f(Some(self.alarm)),
             kernel::ipc::DRIVER_NUM => f(Some(&self.ipc)),
             _ => f(None),
         }
@@ -138,6 +143,7 @@ unsafe fn set_pin_primary_functions() {
 unsafe fn setup_peripherals() {
     cortexm4::nvic::Nvic::new(npcm400::nvic::CR_UART1).enable();
     cortexm4::nvic::Nvic::new(npcm400::nvic::MSWC_T0OUT).enable();
+    cortexm4::nvic::Nvic::new(npcm400::nvic::ITIM32_1).enable();
 }
 
 /// Main function.
@@ -233,16 +239,19 @@ unsafe fn start() -> (
     // Alarm
     //----------------------------------------------------------------------
 
-    // let tim2 = &peripherals.tim2;
-    // let mux_alarm = components::alarm::AlarmMuxComponent::new(tim2)
-    //     .finalize(components::alarm_mux_component_static!(npcm400::tim2::Tim2));
+    let itim = &peripherals.itim;
+    let mux_alarm = components::alarm::AlarmMuxComponent::new(itim)
+        .finalize(components::alarm_mux_component_static!(npcm400::itim::Itim));
 
-    // let alarm = components::alarm::AlarmDriverComponent::new(
-    //     board_kernel,
-    //     capsules_core::alarm::DRIVER_NUM,
-    //     mux_alarm,
-    // )
-    // .finalize(components::alarm_component_static!(npcm400::tim2::Tim2));
+    let alarm = components::alarm::AlarmDriverComponent::new(
+        board_kernel,
+        capsules_core::alarm::DRIVER_NUM,
+        mux_alarm,
+    )
+    .finalize(components::alarm_component_static!(npcm400::itim::Itim));
+
+    // Initialize and start the timer
+    itim.finalize();
 
     //----------------------------------------------------------------------
     // GPIO
@@ -361,17 +370,17 @@ unsafe fn start() -> (
     PROCESS_PRINTER = Some(process_printer);
 
     // PROCESS CONSOLE
-    // let process_console = components::process_console::ProcessConsoleComponent::new(
-    //     board_kernel,
-    //     uart_mux,
-    //     (),
-    //     process_printer,
-    //     Some(cortexm4::support::reset),
-    // )
-    // .finalize(components::process_console_component_static!(
-    //     npcm400::tim2::Tim2
-    // ));
-    // let _ = process_console.start();
+    let process_console = components::process_console::ProcessConsoleComponent::new(
+        board_kernel,
+        uart_mux,
+        mux_alarm,
+        process_printer,
+        Some(cortexm4::support::reset),
+    )
+    .finalize(components::process_console_component_static!(
+        npcm400::itim::Itim
+    ));
+    let _ = process_console.start();
 
     let scheduler = components::sched::round_robin::RoundRobinComponent::new(&*addr_of!(PROCESSES))
         .finalize(components::round_robin_component_static!(NUM_PROCS));
@@ -383,7 +392,7 @@ unsafe fn start() -> (
             kernel::ipc::DRIVER_NUM,
             &memory_allocation_capability,
         ),
-
+        alarm,
         scheduler,
         systick: cortexm4::systick::SysTick::new_with_calibration(96_000_000),
         watchdog: &peripherals.wdt,

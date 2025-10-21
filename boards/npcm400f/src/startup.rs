@@ -30,6 +30,7 @@ impl Component for Npcm400fClockComponent<'_> {
         self.clock.config_clock();
         self.clock.high_clock_on(npcm400::clock::HighClocks::UART);
         self.clock.high_clock_on(npcm400::clock::HighClocks::ADC);
+        self.clock.high_clock_on(npcm400::clock::HighClocks::ITIM1);
     }
 }
 

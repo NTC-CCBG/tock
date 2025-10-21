@@ -22,6 +22,7 @@ pub struct Npcm400DefaultPeripherals<'a> {
     pub scfg: crate::scfg::Scfg,
     pub uart1: crate::uart::Uart<'a>,
     pub wdt: crate::twd::Wdg<'a>,
+    pub itim: crate::itim::Itim<'a>,
 }
 
 impl Npcm400DefaultPeripherals<'_> {
@@ -31,16 +32,20 @@ impl Npcm400DefaultPeripherals<'_> {
             .get_clock_source(crate::clock::HighClocks::UART)
             .unwrap();
         let wdt0 = crate::twd::Wdg::new();
+        let itim = crate::itim::Itim::new(crate::clock::HighClocks::ITIM1);
         Self {
             clock: source_clock,
             scfg: crate::scfg::Scfg::new(),
             uart1: crate::uart::Uart::new_uart1(uart_clock),
             wdt: wdt0,
+            itim: itim,
         }
     }
 
     // Setup any circular dependencies and register deferred calls
     pub fn setup_circular_deps(&'static self) {
+        // Set clock reference for ITIM
+        self.itim.set_clock(&self.clock);
         // self.gpio_ports.setup_circular_deps();
 
         // kernel::deferred_call::DeferredCallClient::register(&self.uart1);
@@ -53,6 +58,12 @@ impl InterruptService for Npcm400DefaultPeripherals<'_> {
             // nvic::ADC => self.adc.handle_interrupt(),
             nvic::CR_UART1 => self.uart1.handle_interrupt(),
             nvic::MSWC_T0OUT => self.wdt.handle_interrupt(),
+            nvic::ITIM32_1 => self.itim.handle_interrupt(),
+            nvic::ITIM32_2 => self.itim.handle_interrupt(),
+            nvic::ITIM32_3 => self.itim.handle_interrupt(),
+            nvic::ITIM32_4 => self.itim.handle_interrupt(),
+            nvic::ITIM32_5 => self.itim.handle_interrupt(),
+            nvic::ITIM32_6 => self.itim.handle_interrupt(),
             _ => return false,
         }
         true

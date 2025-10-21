@@ -521,7 +521,7 @@ impl Clocks {
     }
 }
 
-pub static CLOCK_CONFIG: [Clocks; 3] = [
+pub static CLOCK_CONFIG: [Clocks; 9] = [
     Clocks {
         clock: HighClocks::UART,
         source: HighClockSource::APB2,
@@ -535,6 +535,36 @@ pub static CLOCK_CONFIG: [Clocks; 3] = [
     Clocks {
         clock: HighClocks::ADC,
         source: HighClockSource::APB1,
+        supported: true,
+    },
+    Clocks {
+        clock: HighClocks::ITIM1,
+        source: HighClockSource::APB2,
+        supported: true,
+    },
+    Clocks {
+        clock: HighClocks::ITIM2,
+        source: HighClockSource::APB2,
+        supported: true,
+    },
+    Clocks {
+        clock: HighClocks::ITIM3,
+        source: HighClockSource::APB2,
+        supported: true,
+    },
+    Clocks {
+        clock: HighClocks::ITIM4,
+        source: HighClockSource::APB2,
+        supported: true,
+    },
+    Clocks {
+        clock: HighClocks::ITIM5,
+        source: HighClockSource::APB2,
+        supported: true,
+    },
+    Clocks {
+        clock: HighClocks::ITIM6,
+        source: HighClockSource::APB2,
         supported: true,
     },
 ];
