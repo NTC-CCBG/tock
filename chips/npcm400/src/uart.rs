@@ -409,9 +409,22 @@ impl<'a> Uart<'a> {
         if self.rx_fifo_ready() {
             self.irq_rx_disable();
 
-            // Signal client that the read is done
-            if let (Some(client), Some(rx_buffer)) = (self.rx_client.get(), self.rx_buffer.take()) {
-                client.received_buffer(rx_buffer, self.rx_len.get(), Ok(()), uart::Error::None);
+            // Read data from FIFO into buffer
+            if let Some(mut rx_buffer) = self.rx_buffer.take() {
+                let rx_len = self.rx_len.get();
+                let rx_available = self.rx_fifo_available() as usize;
+
+                // Read up to the requested length or available bytes
+                let bytes_to_read = rx_len.min(rx_available).min(rx_buffer.len());
+
+                for i in 0..bytes_to_read {
+                    rx_buffer[i] = self.registers.urbuf.get();
+                }
+
+                // Signal client that the read is done
+                self.rx_client.map(|client| {
+                    client.received_buffer(rx_buffer, bytes_to_read, Ok(()), uart::Error::None);
+                });
             }
         }
     }
@@ -494,14 +507,32 @@ impl<'a> uart::Receive<'a> for Uart<'a> {
         rx_buf: &'static mut [u8],
         rx_len: usize,
     ) -> Result<(), (ErrorCode, &'static mut [u8])> {
-        self.irq_rx_enable();
+        #[cfg(feature = "uart_interrupt_driven")]
+        {
+            // Interrupt-driven mode: non-blocking
+            // Store buffer and let interrupt handler read when data arrives
+            if rx_len == 0 || rx_len > rx_buf.len() {
+                return Err((ErrorCode::SIZE, rx_buf));
+            }
 
-        if self.fifo_read(rx_buf, rx_len) {
             self.rx_buffer.replace(rx_buf);
-            self.rx_len.set(rx_len); 
+            self.rx_len.set(rx_len);
+            self.irq_rx_enable();
             Ok(())
-        } else {
-            Err((ErrorCode::SIZE, rx_buf))
+        }
+
+        #[cfg(not(feature = "uart_interrupt_driven"))]
+        {
+            // Polling mode: blocking read
+            self.irq_rx_enable();
+
+            if self.fifo_read(rx_buf, rx_len) {
+                self.rx_buffer.replace(rx_buf);
+                self.rx_len.set(rx_len);
+                Ok(())
+            } else {
+                Err((ErrorCode::SIZE, rx_buf))
+            }
         }
     }
 
