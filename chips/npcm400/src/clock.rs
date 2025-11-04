@@ -112,7 +112,7 @@ register_bitfields! [u8,
     Pwdwn_ctl0 [
         PWM_I_PD OFFSET(0) NUMBITS(1) [],
         PWM_J_PD OFFSET(1) NUMBITS(1) [],
-        I3CI_PD OFFSET(2) NUMBITS(1) [],
+        I3C1_PD OFFSET(2) NUMBITS(1) [],
         UART3_PD OFFSET(5) NUMBITS(1) [],
         UART2_PD OFFSET(6) NUMBITS(1) [],
     ],
@@ -180,11 +180,11 @@ register_bitfields! [u8,
         SIOX1_PD OFFSET(7) NUMBITS(1) [],
     ],
     Pwdwn_ctl8 [
-        I3CI2_PD OFFSET(0) NUMBITS(1) [],
-        I3CI3_PD OFFSET(1) NUMBITS(1) [],
-        I3CI4_PD OFFSET(2) NUMBITS(1) [],
-        I3CI5_PD OFFSET(3) NUMBITS(1) [],
-        I3CI6_PD OFFSET(4) NUMBITS(1) [],
+        I3C2_PD OFFSET(0) NUMBITS(1) [],
+        I3C3_PD OFFSET(1) NUMBITS(1) [],
+        I3C4_PD OFFSET(2) NUMBITS(1) [],
+        I3C5_PD OFFSET(3) NUMBITS(1) [],
+        I3C6_PD OFFSET(4) NUMBITS(1) [],
     ]
 ];
 
@@ -293,7 +293,7 @@ pub static PRESCALER: Prescaler = Prescaler {
 pub enum HighClocks {
     PWM_I = 0,
     PWM_J,
-    I3CI,
+    I3C1,
     UART3,
     UART2,
     SPIM,
@@ -345,11 +345,11 @@ pub enum HighClocks {
     SMB12,
     SIOX2,
     SIOX1,
-    I3CI2,
-    I3CI3,
-    I3CI4,
-    I3CI5,
-    I3CI6,
+    I3C2,
+    I3C3,
+    I3C4,
+    I3C5,
+    I3C6,
 }
 
 /// High frequency clock source
@@ -399,7 +399,7 @@ impl Clocks {
         Some(match clock {
             HighClocks::PWM_I => (PowerDownReg::CTL0, 0),
             HighClocks::PWM_J => (PowerDownReg::CTL0, 1),
-            HighClocks::I3CI => (PowerDownReg::CTL0, 2),
+            HighClocks::I3C1 => (PowerDownReg::CTL0, 2),
             HighClocks::UART3 => (PowerDownReg::CTL0, 5),
             HighClocks::UART2 => (PowerDownReg::CTL0, 6),
             HighClocks::SPIM => (PowerDownReg::CTL1, 0),
@@ -451,11 +451,11 @@ impl Clocks {
             HighClocks::SMB12 => (PowerDownReg::CTL7, 5),
             HighClocks::SIOX2 => (PowerDownReg::CTL7, 6),
             HighClocks::SIOX1 => (PowerDownReg::CTL7, 7),
-            HighClocks::I3CI2 => (PowerDownReg::CTL8, 0),
-            HighClocks::I3CI3 => (PowerDownReg::CTL8, 1),
-            HighClocks::I3CI4 => (PowerDownReg::CTL8, 2),
-            HighClocks::I3CI5 => (PowerDownReg::CTL8, 3),
-            HighClocks::I3CI6 => (PowerDownReg::CTL8, 4),
+            HighClocks::I3C2 => (PowerDownReg::CTL8, 0),
+            HighClocks::I3C3 => (PowerDownReg::CTL8, 1),
+            HighClocks::I3C4 => (PowerDownReg::CTL8, 2),
+            HighClocks::I3C5 => (PowerDownReg::CTL8, 3),
+            HighClocks::I3C6 => (PowerDownReg::CTL8, 4),
         })
     }
 
@@ -521,7 +521,7 @@ impl Clocks {
     }
 }
 
-pub static CLOCK_CONFIG: [Clocks; 9] = [
+pub static CLOCK_CONFIG: [Clocks; 15] = [
     Clocks {
         clock: HighClocks::UART,
         source: HighClockSource::APB2,
@@ -565,6 +565,36 @@ pub static CLOCK_CONFIG: [Clocks; 9] = [
     Clocks {
         clock: HighClocks::ITIM6,
         source: HighClockSource::APB2,
+        supported: true,
+    },
+    Clocks {
+        clock: HighClocks::I3C1,
+        source: HighClockSource::I3C,
+        supported: true,
+    },
+    Clocks {
+        clock: HighClocks::I3C2,
+        source: HighClockSource::I3C,
+        supported: true,
+    },
+    Clocks {
+        clock: HighClocks::I3C3,
+        source: HighClockSource::I3C,
+        supported: true,
+    },
+    Clocks {
+        clock: HighClocks::I3C4,
+        source: HighClockSource::I3C,
+        supported: true,
+    },
+    Clocks {
+        clock: HighClocks::I3C5,
+        source: HighClockSource::I3C,
+        supported: true,
+    },
+    Clocks {
+        clock: HighClocks::I3C6,
+        source: HighClockSource::I3C,
         supported: true,
     },
 ];
