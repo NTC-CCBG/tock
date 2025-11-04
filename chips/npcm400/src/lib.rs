@@ -22,6 +22,7 @@ pub mod gpio;
 // pub mod i2c;
 // pub mod rcc;
 // pub mod spi;
+pub mod spim;
 // pub mod syscfg;
 pub mod itim;
 pub mod uart;

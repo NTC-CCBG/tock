@@ -23,6 +23,7 @@ pub struct Npcm400DefaultPeripherals<'a> {
     pub uart1: crate::uart::Uart<'a>,
     pub wdt: crate::twd::Wdg<'a>,
     pub itim: crate::itim::Itim<'a>,
+    pub spim: crate::spim::Spim<'static>,
 }
 
 impl Npcm400DefaultPeripherals<'_> {
@@ -33,12 +34,15 @@ impl Npcm400DefaultPeripherals<'_> {
             .unwrap();
         let wdt0 = crate::twd::Wdg::new();
         let itim = crate::itim::Itim::new(crate::clock::HighClocks::ITIM1);
+        let spim = crate::spim::Spim::new();
+
         Self {
             clock: source_clock,
             scfg: crate::scfg::Scfg::new(),
             uart1: crate::uart::Uart::new_uart1(uart_clock),
             wdt: wdt0,
             itim: itim,
+            spim,
         }
     }
 
