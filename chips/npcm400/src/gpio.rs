@@ -2,13 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 // Copyright Tock Contributors 2022.
 
-use cortexm4f::support::atomic;
 use enum_primitive::cast::FromPrimitive;
 use enum_primitive::enum_from_primitive;
 use kernel::hil;
-use kernel::platform::chip::ClockInterface;
 use kernel::utilities::cells::OptionalCell;
-use kernel::utilities::registers::interfaces::{ReadWriteable, Readable, Writeable};
 use kernel::utilities::registers::{register_bitfields, ReadOnly, ReadWrite, WriteOnly};
 use kernel::utilities::StaticRef;
 
@@ -590,22 +587,22 @@ impl<'a> GpioPorts<'a> {
         Self {
             ports: [
                 Port {
-                    registers: GPIOA_BASE,
+                    _registers: GPIOA_BASE,
                 },
                 Port {
-                    registers: GPIOB_BASE,
+                    _registers: GPIOB_BASE,
                 },
                 Port {
-                    registers: GPIOC_BASE,
+                    _registers: GPIOC_BASE,
                 },
                 Port {
-                    registers: GPIOD_BASE,
+                    _registers: GPIOD_BASE,
                 },
                 Port {
-                    registers: GPIOE_BASE,
+                    _registers: GPIOE_BASE,
                 },
                 Port {
-                    registers: GPIOF_BASE,
+                    _registers: GPIOF_BASE,
                 },
             ],
             pins: [
@@ -661,7 +658,7 @@ impl<'a> GpioPorts<'a> {
 }
 
 pub struct Port {
-    registers: StaticRef<GpioRegisters>,
+    _registers: StaticRef<GpioRegisters>,
     // clock: PortClock,
 }
 
@@ -721,7 +718,7 @@ impl<'a> Pin<'a> {
         Mode::from_u32(0).unwrap_or(Mode::Input)
     }
 
-    pub fn set_mode(&self, mode: Mode) {
+    pub fn set_mode(&self, _mode: Mode) {
         // let port = self.ports_ref.unwrap_or_panic().get_port(self.pinid); // Unwrap fail =
 
         // match self.pinid.get_pin_number() {
@@ -745,7 +742,7 @@ impl<'a> Pin<'a> {
         // }
     }
 
-    pub fn set_alternate_function(&self, af: AlternateFunction) {
+    pub fn set_alternate_function(&self, _af: AlternateFunction) {
         // let port = self.ports_ref.unwrap_or_panic().get_port(self.pinid); // Unwrap fail =
 
         // match self.pinid.get_pin_number() {
@@ -831,7 +828,7 @@ impl<'a> Pin<'a> {
         PullUpPullDown::from_u32(0).unwrap_or(PullUpPullDown::NoPullUpPullDown)
     }
 
-    fn set_pullup_pulldown(&self, pupd: PullUpPullDown) {
+    fn set_pullup_pulldown(&self, _pupd: PullUpPullDown) {
         // let port = self.ports_ref.unwrap_or_panic().get_port(self.pinid); // Unwrap fail =
 
         // match self.pinid.get_pin_number() {
@@ -1059,11 +1056,9 @@ impl hil::gpio::Input for Pin<'_> {
 }
 
 impl<'a> hil::gpio::Interrupt<'a> for Pin<'a> {
-    fn enable_interrupts(&self, mode: hil::gpio::InterruptEdge) {
-    }
+    fn enable_interrupts(&self, _mode: hil::gpio::InterruptEdge) {}
 
-    fn disable_interrupts(&self) {
-    }
+    fn disable_interrupts(&self) {}
 
     fn set_client(&self, client: &'a dyn hil::gpio::Client) {
         self.client.set(client);

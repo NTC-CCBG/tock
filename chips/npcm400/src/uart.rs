@@ -216,7 +216,7 @@ impl<'a> Uart<'a> {
             // Clear UART rx FIFO
             self.clear_rx_fifo();
 
-            // Configure UART interrupts            
+            // Configure UART interrupts
             self.irq_err_enable();
         }
     }
@@ -367,6 +367,7 @@ impl<'a> Uart<'a> {
         true
     }
 
+    #[allow(dead_code)]
     fn fifo_read(&self, rx_data: &mut [u8], size: usize) -> bool {
         let capped_size = min(size, rx_data.len());
         if capped_size == 0 {
@@ -410,7 +411,7 @@ impl<'a> Uart<'a> {
             self.irq_rx_disable();
 
             // Read data from FIFO into buffer
-            if let Some(mut rx_buffer) = self.rx_buffer.take() {
+            if let Some(rx_buffer) = self.rx_buffer.take() {
                 let rx_len = self.rx_len.get();
                 let rx_available = self.rx_fifo_available() as usize;
 

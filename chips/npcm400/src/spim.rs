@@ -165,10 +165,10 @@ pub enum ReadMode {
 impl ReadMode {
     fn to_spi_cmd(&self) -> u8 {
         match self {
-            ReadMode::Normal => 0x03,      // SPI_NOR_CMD_READ
-            ReadMode::Fast => 0x0B,        // SPI_NOR_CMD_READ_FAST
-            ReadMode::FastDual => 0xBB,    // SPI_NOR_CMD_2READ
-            ReadMode::Quad => 0xEB,        // SPI_NOR_CMD_4READ
+            ReadMode::Normal => 0x03,   // SPI_NOR_CMD_READ
+            ReadMode::Fast => 0x0B,     // SPI_NOR_CMD_READ_FAST
+            ReadMode::FastDual => 0xBB, // SPI_NOR_CMD_2READ
+            ReadMode::Quad => 0xEB,     // SPI_NOR_CMD_4READ
         }
     }
 }
@@ -214,7 +214,9 @@ enum FlashOpState {
     EraseCommand,
     ProgramCommand,
     WaitReady,
+    #[allow(dead_code)]
     ReadStatus,
+    #[allow(dead_code)]
     Complete,
 }
 
@@ -270,6 +272,7 @@ pub struct Spim<'a> {
     rate: Cell<u32>,
     polarity: Cell<hil::spi::ClockPolarity>,
     phase: Cell<hil::spi::ClockPhase>,
+    #[allow(dead_code)]
     data_order: Cell<hil::spi::DataOrder>,
     // Flash operation support
     flash_client: OptionalCell<&'a dyn FlashClient>,
@@ -348,7 +351,9 @@ impl<'a> Spim<'a> {
     /// Initialize clock divider
     fn init_clock(&self) -> Result<(), ErrorCode> {
         // Assume source clock > 50MHz, set divider
-        self.registers.ctl1.modify(Ctl1::DIVIDER.val(SPIM_CLK_DIVIDER));
+        self.registers
+            .ctl1
+            .modify(Ctl1::DIVIDER.val(SPIM_CLK_DIVIDER));
         Ok(())
     }
 
@@ -368,11 +373,7 @@ impl<'a> Spim<'a> {
     }
 
     /// Configure the SPIM for specific operation
-    pub fn configure(
-        &self,
-        config: &Config,
-        operation: OperationFlags,
-    ) -> Result<(), ErrorCode> {
+    pub fn configure(&self, config: &Config, operation: OperationFlags) -> Result<(), ErrorCode> {
         // Check if config is different from current config
         let config_changed = self.current_config.get().map_or(true, |current| {
             current.chip_select != config.chip_select
@@ -588,9 +589,7 @@ impl<'a> Spim<'a> {
 
         // Address phase
         if (flags & TRANSCEIVE_ACCESS_ADDR) != 0 {
-            let addr = config
-                .address
-                .ok_or(ErrorCode::INVAL)?;
+            let addr = config.address.ok_or(ErrorCode::INVAL)?;
             let start = if current_config.enter_4ba { 0 } else { 1 };
             for i in start..4 {
                 let b = ((addr >> (8 * (3 - i))) & 0xFF) as u8;
@@ -798,7 +797,7 @@ impl<'a> Spim<'a> {
 
     /// Start Write Enable command (for program)
     fn start_write_enable_for_program(&self, data_len: usize) -> Result<(), ErrorCode> {
-        self.flash_buffer.map_or(Err(ErrorCode::FAIL), |buf| {
+        self.flash_buffer.map_or(Err(ErrorCode::FAIL), |_buf| {
             // Save data length in first position (will be overwritten with command)
             let address = self.flash_op_address.get();
 
@@ -1132,28 +1131,32 @@ impl<'a> Spim<'a> {
     /// This is a temporary implementation - should be converted to async
     fn perform_sync_transfer(&self, len: usize) -> Result<(), ErrorCode> {
         // Transmit and receive data byte by byte
-        self.tx_buf.map(|tx_buf| {
-            for i in 0..len {
-                if i < tx_buf.len() {
-                    // Write byte
-                    if let Err(e) = self.normal_write_byte(tx_buf[i]) {
-                        return Err(e);
+        self.tx_buf
+            .map(|tx_buf| {
+                for i in 0..len {
+                    if i < tx_buf.len() {
+                        // Write byte
+                        if let Err(e) = self.normal_write_byte(tx_buf[i]) {
+                            return Err(e);
+                        }
                     }
                 }
-            }
-            Ok(())
-        }).unwrap_or(Err(ErrorCode::FAIL))?;
+                Ok(())
+            })
+            .unwrap_or(Err(ErrorCode::FAIL))?;
 
         // Read data if rx buffer is provided
-        self.rx_buf.map(|rx_buf| {
-            for i in 0..core::cmp::min(len, rx_buf.len()) {
-                match self.normal_read_byte() {
-                    Ok(byte) => rx_buf[i] = byte,
-                    Err(e) => return Err(e),
+        self.rx_buf
+            .map(|rx_buf| {
+                for i in 0..core::cmp::min(len, rx_buf.len()) {
+                    match self.normal_read_byte() {
+                        Ok(byte) => rx_buf[i] = byte,
+                        Err(e) => return Err(e),
+                    }
                 }
-            }
-            Ok(())
-        }).transpose()?;
+                Ok(())
+            })
+            .transpose()?;
 
         // De-assert chip select
         let sw_cs = self.current_chip_select.get().sw_index();
