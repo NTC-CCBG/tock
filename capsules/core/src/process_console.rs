@@ -44,7 +44,7 @@ pub const DEFAULT_COMMAND_HISTORY_LEN: usize = 10;
 /// List of valid commands for printing help. Consolidated as these are
 /// displayed in a few different cases.
 const VALID_COMMANDS_STR: &[u8] =
-    b"help status list stop start fault boot terminate process kernel reset panic console-start console-stop\r\n";
+    b"help status list stop start fault boot terminate process kernel reset panic console-start console-stop devmem\r\n";
 
 /// Escape character for ANSI escape sequences.
 const ESC: u8 = b'\x1B';
@@ -208,6 +208,18 @@ pub struct KernelAddresses {
     pub bss_end: *const u8,
 }
 
+/// Callback function type for reading device memory.
+/// 
+/// Takes an address and size (in bytes: 1, 2, 4, or 8) and returns
+/// the value read as a u64, or None if the address is invalid.
+pub type DevmemReadFn = fn(addr: usize, size: usize) -> Option<u64>;
+
+/// Callback function type for writing device memory.
+/// 
+/// Takes an address, size (in bytes: 1, 2, 4, or 8), and value to write.
+/// Returns true if the write was successful, false otherwise.
+pub type DevmemWriteFn = fn(addr: usize, size: usize, value: u64) -> bool;
+
 /// Track the operational state of the process console.
 #[derive(Clone, Copy, PartialEq)]
 enum ProcessConsoleState {
@@ -269,6 +281,12 @@ pub struct ProcessConsole<
 
     /// Function used to reset the device in bootloader mode
     reset_function: Option<fn() -> !>,
+
+    /// Optional function to read device memory for debugging
+    devmem_read_fn: Option<DevmemReadFn>,
+
+    /// Optional function to write device memory for debugging
+    devmem_write_fn: Option<DevmemWriteFn>,
 
     /// This capsule needs to use potentially dangerous APIs related to
     /// processes, and requires a capability to access those APIs.
@@ -453,6 +471,8 @@ impl<
         kernel: &'static Kernel,
         kernel_addresses: KernelAddresses,
         reset_function: Option<fn() -> !>,
+        devmem_read_fn: Option<DevmemReadFn>,
+        devmem_write_fn: Option<DevmemWriteFn>,
         capability: C,
     ) -> ProcessConsole<'a, COMMAND_HISTORY_LEN, A, C> {
         ProcessConsole {
@@ -476,6 +496,8 @@ impl<
             kernel,
             kernel_addresses,
             reset_function,
+            devmem_read_fn,
+            devmem_write_fn,
             capability,
         }
     }
@@ -1004,6 +1026,219 @@ impl<
                             );
                         } else if clean_str.starts_with("panic") {
                             panic!("Process Console forced a kernel panic.");
+                        } else if clean_str.starts_with("devmem") {
+                            let mut words = clean_str.split_whitespace();
+                            let _cmd = words.next(); // "devmem"
+                            let addr_arg = words.next();
+                            let size_arg = words.next();
+                            let value_arg = words.next();
+                            
+                            if addr_arg.is_none() {
+                                let _ = self
+                                    .write_bytes(b"Usage: devmem <address> <size> [value]\r\n");
+                                let _ = self
+                                    .write_bytes(b"  address: hex address (with or without 0x prefix)\r\n");
+                                let _ = self
+                                    .write_bytes(b"  size: 8, 16, 32, or 64 bits\r\n");
+                                let _ = self
+                                    .write_bytes(b"  value: hex value to write (optional, reads if omitted)\r\n");
+                            } else if size_arg.is_none() {
+                                let _ = self
+                                    .write_bytes(b"Usage: devmem <address> <size> [value]\r\n");
+                                let _ = self
+                                    .write_bytes(b"  size: 8, 16, 32, or 64 bits\r\n");
+                            } else {
+                                let addr_str = addr_arg.unwrap();
+                                let size_str = size_arg.unwrap();
+                                
+                                // Strip "0x" or "0X" prefix if present
+                                let addr_hex = if addr_str.starts_with("0x") || addr_str.starts_with("0X") {
+                                    &addr_str[2..]
+                                } else {
+                                    addr_str
+                                };
+                                
+                                // Parse size argument
+                                let size = match size_str.parse::<usize>() {
+                                    Ok(s) => s,
+                                    Err(_) => {
+                                        let _ = self.write_bytes(b"Invalid size format. Use decimal digits (8, 16, 32, or 64)\r\n");
+                                        return;
+                                    }
+                                };
+                                
+                                // Validate address
+                                let addr = match usize::from_str_radix(addr_hex, 16) {
+                                    Ok(a) => a,
+                                    Err(_) => {
+                                        let _ = self.write_bytes(b"Invalid address format. Use hex digits (e.g., 40000000 or 0x40000000)\r\n");
+                                        return;
+                                    }
+                                };
+                                
+                                // Validate size
+                                if size != 8 && size != 16 && size != 32 && size != 64 {
+                                    let mut console_writer = ConsoleWriter::new();
+                                    let _ = write(
+                                        &mut console_writer,
+                                        format_args!("Invalid size: {}. Must be 8, 16, 32, or 64.\r\n", size),
+                                    );
+                                    let _ = self.write_bytes(
+                                        &(console_writer.buf)[..console_writer.size],
+                                    );
+                                    return;
+                                }
+                                
+                                // Determine if this is a read or write operation
+                                if let Some(value_str) = value_arg {
+                                    // Write operation
+                                    self.devmem_write_fn.map_or_else(
+                                        || {
+                                            let _ = self.write_bytes(b"devmem write not available\r\n");
+                                        },
+                                        |write_fn| {
+                                            // Strip "0x" or "0X" prefix from value if present
+                                            let value_hex = if value_str.starts_with("0x") || value_str.starts_with("0X") {
+                                                &value_str[2..]
+                                            } else {
+                                                value_str
+                                            };
+                                            
+                                            // Parse value
+                                            match u64::from_str_radix(value_hex, 16) {
+                                                Ok(value) => {
+                                                    // Perform write
+                                                    if write_fn(addr, size, value) {
+                                                        // Read back and display the written value
+                                                        self.devmem_read_fn.map_or_else(
+                                                            || {
+                                                                let _ = self.write_bytes(b"Write successful (read-back not available)\r\n");
+                                                            },
+                                                            |read_fn| {
+                                                                match read_fn(addr, size) {
+                                                                    Some(read_value) => {
+                                                                        let mut console_writer = ConsoleWriter::new();
+                                                                        match size {
+                                                                            8 => {
+                                                                                let _ = write(
+                                                                                    &mut console_writer,
+                                                                                    format_args!(
+                                                                                        "0x{:08x}: 0x{:02x}\r\n",
+                                                                                        addr, read_value as u8
+                                                                                    ),
+                                                                                );
+                                                                            }
+                                                                            16 => {
+                                                                                let _ = write(
+                                                                                    &mut console_writer,
+                                                                                    format_args!(
+                                                                                        "0x{:08x}: 0x{:04x}\r\n",
+                                                                                        addr, read_value as u16
+                                                                                    ),
+                                                                                );
+                                                                            }
+                                                                            32 => {
+                                                                                let _ = write(
+                                                                                    &mut console_writer,
+                                                                                    format_args!(
+                                                                                        "0x{:08x}: 0x{:08x}\r\n",
+                                                                                        addr, read_value as u32
+                                                                                    ),
+                                                                                );
+                                                                            }
+                                                                            64 => {
+                                                                                let _ = write(
+                                                                                    &mut console_writer,
+                                                                                    format_args!(
+                                                                                        "0x{:08x}: 0x{:016x}\r\n",
+                                                                                        addr, read_value
+                                                                                    ),
+                                                                                );
+                                                                            }
+                                                                            _ => unreachable!(),
+                                                                        }
+                                                                        let _ = self.write_bytes(
+                                                                            &(console_writer.buf)[..console_writer.size],
+                                                                        );
+                                                                    }
+                                                                    None => {
+                                                                        let _ = self.write_bytes(b"Write successful (read-back failed)\r\n");
+                                                                    }
+                                                                }
+                                                            },
+                                                        );
+                                                    } else {
+                                                        let _ = self.write_bytes(b"Failed to write memory at specified address\r\n");
+                                                    }
+                                                }
+                                                Err(_) => {
+                                                    let _ = self.write_bytes(b"Invalid value format. Use hex digits (e.g., 12345678 or 0x12345678)\r\n");
+                                                }
+                                            }
+                                        },
+                                    );
+                                } else {
+                                    // Read operation
+                                    self.devmem_read_fn.map_or_else(
+                                        || {
+                                            let _ = self.write_bytes(b"devmem read not available\r\n");
+                                        },
+                                        |read_fn| {
+                                            // Call the safe callback function to read memory
+                                            match read_fn(addr, size) {
+                                                Some(value) => {
+                                                    let mut console_writer = ConsoleWriter::new();
+                                                    match size {
+                                                        8 => {
+                                                            let _ = write(
+                                                                &mut console_writer,
+                                                                format_args!(
+                                                                    "0x{:08x}: 0x{:02x}\r\n",
+                                                                    addr, value as u8
+                                                                ),
+                                                            );
+                                                        }
+                                                        16 => {
+                                                            let _ = write(
+                                                                &mut console_writer,
+                                                                format_args!(
+                                                                    "0x{:08x}: 0x{:04x}\r\n",
+                                                                    addr, value as u16
+                                                                ),
+                                                            );
+                                                        }
+                                                        32 => {
+                                                            let _ = write(
+                                                                &mut console_writer,
+                                                                format_args!(
+                                                                    "0x{:08x}: 0x{:08x}\r\n",
+                                                                    addr, value as u32
+                                                                ),
+                                                            );
+                                                        }
+                                                        64 => {
+                                                            let _ = write(
+                                                                &mut console_writer,
+                                                                format_args!(
+                                                                    "0x{:08x}: 0x{:016x}\r\n",
+                                                                    addr, value
+                                                                ),
+                                                            );
+                                                        }
+                                                        _ => unreachable!(),
+                                                    }
+                                                    let _ = self.write_bytes(
+                                                        &(console_writer.buf)[..console_writer.size],
+                                                    );
+                                                }
+                                                None => {
+                                                    let _ = self.write_bytes(b"Failed to read memory at specified address\r\n");
+                                                }
+                                            }
+                                        },
+                                    );
+                                }
+                            }
                         } else {
                             let _ = self.write_bytes(b"Valid commands are: ");
                             let _ = self.write_bytes(VALID_COMMANDS_STR);

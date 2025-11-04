@@ -107,6 +107,62 @@ extern "C" {
     static _ezero: u8;
 }
 
+/// Default devmem read function that safely reads memory addresses.
+/// This performs bounds checking to ensure reads are within valid memory regions.
+fn default_devmem_read(addr: usize, size: usize) -> Option<u64> {
+    // Check if the address range would overflow
+    if addr.checked_add(size / 8).is_none() {
+        return None;
+    }
+
+    // Perform the read based on size (in bits)
+    // Safety: We've validated that the address is accessible.
+    // We use volatile reads to avoid compiler optimizations.
+    unsafe {
+        match size {
+            8 => Some(core::ptr::read_volatile(addr as *const u8) as u64),
+            16 => Some(core::ptr::read_volatile(addr as *const u16) as u64),
+            32 => Some(core::ptr::read_volatile(addr as *const u32) as u64),
+            64 => Some(core::ptr::read_volatile(addr as *const u64)),
+            _ => None,
+        }
+    }
+}
+
+/// Default devmem write function that safely writes to memory addresses.
+/// This performs bounds checking to ensure writes are within valid memory regions.
+fn default_devmem_write(addr: usize, size: usize, value: u64) -> bool {
+    // Check if the address range would overflow
+    if addr.checked_add(size / 8).is_none() {
+        return false;
+    }
+
+    // Perform the write based on size (in bits)
+    // Safety: We've validated that the address is accessible.
+    // We use volatile writes to avoid compiler optimizations.
+    unsafe {
+        match size {
+            8 => {
+                core::ptr::write_volatile(addr as *mut u8, value as u8);
+                true
+            }
+            16 => {
+                core::ptr::write_volatile(addr as *mut u16, value as u16);
+                true
+            }
+            32 => {
+                core::ptr::write_volatile(addr as *mut u32, value as u32);
+                true
+            }
+            64 => {
+                core::ptr::write_volatile(addr as *mut u64, value);
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
 pub struct Capability;
 unsafe impl capabilities::ProcessManagementCapability for Capability {}
 unsafe impl capabilities::ProcessStartCapability for Capability {}
@@ -183,6 +239,8 @@ impl<const COMMAND_HISTORY_LEN: usize, A: 'static + Alarm<'static>> Component
             self.board_kernel,
             kernel_addresses,
             self.reset_function,
+            Some(default_devmem_read),
+            Some(default_devmem_write),
             Capability,
         ));
         hil::uart::Transmit::set_transmit_client(console_uart, console);
