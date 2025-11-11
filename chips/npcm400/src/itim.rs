@@ -424,7 +424,8 @@ impl Time for Itim<'_> {
             if let Some(alarm_val) = self.alarm_value.get() {
                 let hw_cnt = self.registers.cnt32.get();
                 let tock_ticks_until_alarm = alarm_val.wrapping_sub(base_time);
-                let hw_ticks_until_alarm = tock_ticks_until_alarm * self.hw_ticks_per_tock_tick.get();
+                let hw_ticks_until_alarm =
+                    tock_ticks_until_alarm * self.hw_ticks_per_tock_tick.get();
 
                 // Convert hardware counter to Tock ticks
                 // Hardware counts down, so elapsed = initial - current

@@ -16,16 +16,31 @@
 
 use core::cell::Cell;
 use i3c_driver::hil;
+use kernel::ErrorCode;
+use kernel::utilities::StaticRef;
 use kernel::utilities::cells::OptionalCell;
 use kernel::utilities::cells::TakeCell;
 use kernel::utilities::registers::interfaces::{ReadWriteable, Readable, Writeable};
-use kernel::utilities::registers::{register_bitfields, register_structs, ReadOnly, ReadWrite};
-use kernel::utilities::StaticRef;
-use kernel::ErrorCode;
+use kernel::utilities::registers::{ReadOnly, ReadWrite, register_bitfields, register_structs};
 
 /// I3C Bus default characteristics
 const BUS_CHARACTERISTICS_TARGET: u8 = 0x26; // Standard target BCR
 const DEVICE_CHARACTERISTICS: u8 = 0xCC; // Standard device characteristics
+
+/// Mandatory Data Byte for MCTP Pending Read notification
+/// This MDB is sent in the IBI to notify the controller that MCTP data is ready to be read
+pub const MDB_PENDING_READ_MCTP: u8 = 0xae;
+
+// Conditional debug macro for I3C driver
+#[cfg(feature = "debug-i3c")]
+macro_rules! i3c_debug {
+    ($($arg:tt)*) => (kernel::debug!($($arg)*));
+}
+
+#[cfg(not(feature = "debug-i3c"))]
+macro_rules! i3c_debug {
+    ($($arg:tt)*) => {{}};
+}
 
 /// I3C Provisioned ID (PID) - 48-bit unique device identifier
 #[derive(Copy, Clone, Debug)]
@@ -704,8 +719,14 @@ pub struct I3cTarget<'a> {
     dma_rx_channel: u8,
     dma_tx_channel: u8,
 
-    /// Client callback
+    /// Client callback (native npcm400 Client trait)
     client: OptionalCell<&'a dyn Client>,
+
+    /// HIL RX client for MCTP compatibility
+    hil_rx_client: OptionalCell<&'a dyn hil::RxClient>,
+
+    /// HIL TX client for MCTP compatibility
+    hil_tx_client: OptionalCell<&'a dyn hil::TxClient>,
 
     /// Target configuration
     static_address: Cell<u8>,
@@ -773,6 +794,8 @@ impl<'a> I3cTarget<'a> {
             dma_rx_channel,
             dma_tx_channel,
             client: OptionalCell::empty(),
+            hil_rx_client: OptionalCell::empty(),
+            hil_tx_client: OptionalCell::empty(),
             static_address: Cell::new(0x3a), // Default address
             dynamic_address: Cell::new(None),
             max_read_len: Cell::new(256),
@@ -926,7 +949,7 @@ impl<'a> I3cTarget<'a> {
         } else if core::ptr::eq(&*self.registers, &*I3C6_BASE) {
             5 // I3C6
         } else {
-            kernel::debug!("I3C reset_module: Unknown I3C instance");
+            i3c_debug!("I3C reset_module: Unknown I3C instance");
             return;
         };
 
@@ -1038,21 +1061,12 @@ impl<'a> I3cTarget<'a> {
         let mintset_mask = MINTSET::NOWMASTER::SET.value;
         regs.mintset.set(mintset_mask);
 
-        kernel::debug!("I3C Target INTSET=0x{:X}", regs.intset.get());
-
         // Finally, enable slave mode after everything is configured
         regs.config.modify(CONFIG::SLVENA::Enabled);
 
         // Flush FIFOs
         regs.datactrl
             .modify(DATACTRL::FLUSHTB::SET + DATACTRL::FLUSHFB::SET);
-
-        // dump registers for debugging
-        kernel::debug!(
-            "I3C init complete: CONFIG=0x{:X} INTSET=0x{:X}",
-            regs.config.get(),
-            regs.intset.get()
-        );
     }
 
     /// Handle I3C interrupt
@@ -1071,7 +1085,7 @@ impl<'a> I3cTarget<'a> {
             // Re-read INTMASKED in case of race condition
             int_masked = regs.intmasked.get();
             if int_masked == 0 {
-                kernel::debug!("I3C Target Spurious Interrupt");
+                i3c_debug!("I3C Target Spurious Interrupt");
                 return;
             }
         }
@@ -1082,22 +1096,6 @@ impl<'a> I3cTarget<'a> {
             // Handle errors first
             if (int_masked & INTMASKED::ERRWARN::SET.value) != 0 {
                 self.handle_error();
-            }
-
-            // Handle RX data pending (write from controller)
-            // IMPORTANT: Process RXPEND BEFORE STOP to read all data before completing transfer
-            if (int_masked & INTMASKED::RXPEND::SET.value) != 0 {
-                self.handle_rxpend();
-                // RXPEND auto-clears when FIFO is empty
-            }
-
-            // Handle STOP condition
-            // Process AFTER RXPEND to ensure all data is read before completing transfer
-            if (int_masked & INTMASKED::STOP::SET.value) != 0 {
-                self.handle_stop();
-
-                // Clear STOP interrupt
-                regs.status.set(STATUS::STOP::SET.value);
             }
 
             // Handle START condition (includes repeated start)
@@ -1117,6 +1115,8 @@ impl<'a> I3cTarget<'a> {
             }
 
             // Handle address MATCHED
+            // IMPORTANT: Process MATCHED BEFORE RXPEND so state is set correctly (Write vs Read)
+            // before we try to read data from FIFO
             if (int_masked & INTMASKED::MATCHED::SET.value) != 0 {
                 self.handle_matched();
 
@@ -1129,6 +1129,23 @@ impl<'a> I3cTarget<'a> {
                     // W1C
                     regs.status.set(STATUS::MATCHED::SET.value);
                 }
+            }
+
+            // Handle RX data pending (write from controller)
+            // IMPORTANT: Process RXPEND AFTER MATCHED (so state is set) but BEFORE STOP
+            // (to read all data before completing transfer)
+            if (int_masked & INTMASKED::RXPEND::SET.value) != 0 {
+                self.handle_rxpend();
+                // RXPEND auto-clears when FIFO is empty
+            }
+
+            // Handle STOP condition
+            // Process AFTER RXPEND to ensure all data is read before completing transfer
+            if (int_masked & INTMASKED::STOP::SET.value) != 0 {
+                self.handle_stop();
+
+                // Clear STOP interrupt
+                regs.status.set(STATUS::STOP::SET.value);
             }
 
             // Handle dynamic address change
@@ -1185,7 +1202,7 @@ impl<'a> I3cTarget<'a> {
         let regs = self.registers;
         let err = regs.errwarn.get();
 
-        kernel::debug!("I3C Target Error: ERRWARN=0x{:X}", err);
+        i3c_debug!("I3C Target Error: ERRWARN=0x{:X}", err);
 
         // Clear errors by writing 1s
         regs.errwarn.set(err);
@@ -1218,20 +1235,15 @@ impl<'a> I3cTarget<'a> {
                 });
             } else {
                 // No buffer available - must flush FIFO to prevent continuous interrupts
-                kernel::debug!("I3C Target: No RX buffer available, flushing FIFO");
                 if self.transfer_mode.get() == TransferMode::Fifo {
                     regs.datactrl.modify(DATACTRL::FLUSHFB::SET);
                 }
             }
         } else {
-            // // Not in Write state - flush unexpected data
-            // kernel::debug!(
-            //     "I3C Target: Unexpected RXPEND in state {:?}, flushing",
-            //     self.state.get()
-            // );
-            // if self.transfer_mode.get() == TransferMode::Fifo {
-            //     regs.datactrl.modify(DATACTRL::FLUSHFB::SET);
-            // }
+            // Not in Write state - flush unexpected data
+            if self.transfer_mode.get() == TransferMode::Fifo {
+                regs.datactrl.modify(DATACTRL::FLUSHFB::SET);
+            }
         }
     }
 
@@ -1242,10 +1254,13 @@ impl<'a> I3cTarget<'a> {
 
         if regs.dynaddr.is_set(DYNADDR::DAVALID) {
             self.dynamic_address.set(Some(dynaddr as u8));
-            kernel::debug!("I3C Target: Dynamic address assigned: 0x{:X}", dynaddr);
+            i3c_debug!(
+                "[I3C Target driver] Dynamic address assigned: 0x{:X}",
+                dynaddr
+            );
         } else {
             self.dynamic_address.set(None);
-            kernel::debug!("I3C Target: Dynamic address cleared");
+            i3c_debug!("[I3C Target driver] Dynamic address cleared");
         }
     }
 
@@ -1261,7 +1276,7 @@ impl<'a> I3cTarget<'a> {
     /// 2. Prepare for new transactions
     /// 3. Optionally notify upper layers of the reset event
     fn handle_slvstart(&self) {
-        kernel::debug!("I3C Target: SLVSTART - Target reset detected");
+        i3c_debug!("[I3C Target driver] SLVSTART - Target reset detected");
 
         // Reset transfer state
         let state = self.state.get();
@@ -1315,7 +1330,6 @@ impl<'a> I3cTarget<'a> {
         match state {
             OperState::Write => {
                 // Repeated start during write - complete the write transfer
-                kernel::debug!("I3C Target: Repeated Start during Write");
                 let len = self.rx_len.get();
                 self.rx_buffer.take().map(|buffer| {
                     self.client.map(|client| {
@@ -1327,8 +1341,14 @@ impl<'a> I3cTarget<'a> {
             }
             OperState::Read => {
                 // Repeated start during read - complete the read transfer
-                kernel::debug!("I3C Target: Repeated Start during Read");
-                self.tx_buffer.take();
+                if let Some(buffer) = self.tx_buffer.take() {
+                    // Return TX buffer to client
+                    if self.hil_tx_client.is_some() {
+                        self.hil_tx_client.map(|client| {
+                            client.send_done(buffer, Ok(()));
+                        });
+                    }
+                }
                 self.tx_len.set(0);
                 self.tx_idx.set(0);
                 self.state.set(OperState::Idle);
@@ -1365,7 +1385,28 @@ impl<'a> I3cTarget<'a> {
         // Check if it's a read or write by examining the captured status bits
         if (status & STATUS::RXPEND::SET.value) != 0 || (status & STATUS::STREQWR::SET.value) != 0 {
             // Write request from controller - target will receive data
-            // kernel::debug!("I3C Target: MATCHED - Write Request");
+
+            // If we have a pending TX operation (buffer waiting to be read),
+            // cancel it and return the buffer to the client since the master
+            // is sending a write instead of reading our response
+            if self.tx_buffer.is_some() {
+                if let Some(buffer) = self.tx_buffer.take() {
+                    if self.hil_tx_client.is_some() {
+                        self.hil_tx_client.map(|client| {
+                            client.send_done(buffer, Err(ErrorCode::CANCEL));
+                        });
+                    }
+                }
+                self.tx_len.set(0);
+                self.tx_idx.set(0);
+            }
+
+            // If no RX buffer is available, request one from the HIL client (MCTP)
+            if self.rx_buffer.is_none() {
+                self.hil_rx_client.map(|client| {
+                    client.write_expected();
+                });
+            }
 
             // Change state to Write
             // The RXPEND interrupt handler will read the actual data from FIFO
@@ -1373,7 +1414,6 @@ impl<'a> I3cTarget<'a> {
             self.rx_len.set(0); // Reset RX length counter
         } else {
             // Read request from controller - target must send data
-            // kernel::debug!("I3C Target: MATCHED - Read Request");
 
             // Change state to Read
             self.state.set(OperState::Read);
@@ -1385,9 +1425,10 @@ impl<'a> I3cTarget<'a> {
                 self.tx_buffer.map(|buffer| {
                     let len = self.tx_len.get();
                     if len > 0 {
-                        let mut idx = 0;
+                        // Continue from where transmit() left off (tx_idx may already be set)
+                        let mut idx = self.tx_idx.get();
 
-                        // Fill TX FIFO immediately with available data
+                        // Fill TX FIFO with remaining data
                         while !regs.datactrl.is_set(DATACTRL::TXFULL) && idx < len {
                             if idx == len - 1 {
                                 // Last byte - use WDATABE
@@ -1401,9 +1442,6 @@ impl<'a> I3cTarget<'a> {
                         }
 
                         self.tx_idx.set(idx);
-                        kernel::debug!("I3C Target: Pre-filled TX FIFO with {} bytes", idx);
-                    } else {
-                        kernel::debug!("I3C Target: No TX data available for read request");
                     }
                 });
             }
@@ -1456,8 +1494,6 @@ impl<'a> I3cTarget<'a> {
     fn handle_rx(&self) {
         let regs = self.registers;
 
-        kernel::debug!("I3C Target: Handling RX request");
-
         // Change state to Write
         self.state.set(OperState::Write);
 
@@ -1505,8 +1541,6 @@ impl<'a> I3cTarget<'a> {
     fn handle_tx(&self) {
         let regs = self.registers;
 
-        kernel::debug!("I3C Target: Handling TX request");
-
         // If we don't have TX data, request it from client
         if self.tx_buffer.is_none() {
             self.state.set(OperState::Read);
@@ -1522,7 +1556,6 @@ impl<'a> I3cTarget<'a> {
                 self.setup_dma_tx(buffer, len);
             });
         } else {
-            kernel::debug!("I3C Target: [FIFO] TX handling");
             // FIFO mode - manual write
             self.tx_buffer.map(|buffer| {
                 let mut idx = self.tx_idx.get();
@@ -1575,48 +1608,71 @@ impl<'a> I3cTarget<'a> {
         // This can happen in certain timing conditions on the bus
         let int_masked = regs.intmasked.get();
         if (int_masked & INTMASKED::START::SET.value) != 0 {
-            kernel::debug!("I3C Target: Concurrent START detected during STOP");
             // Clear the START status bit (W1C)
             regs.status.set(STATUS::START::SET.value);
         }
 
-        // Process the transfer completion based on current state
+        // Return to idle state BEFORE calling client callbacks
+        // This allows clients (e.g., MCTP) to immediately queue TX data in response
+        self.state.set(OperState::Idle);
+
+        // Process the transfer completion based on previous state
         match state {
             OperState::Write => {
                 // Write complete - notify client
                 let len = self.rx_len.get();
                 if let Some(buffer) = self.rx_buffer.take() {
-                    self.client.map(|client| {
-                        client.write_complete(buffer, len, Ok(()));
-                    });
-                } else {
-                    kernel::debug!(
-                        "I3C Target: Write complete but no RX buffer (data was flushed)"
-                    );
+                    // Prioritize HIL RX client (for MCTP) over native client
+                    if self.hil_rx_client.is_some() {
+                        self.hil_rx_client.map(|client| {
+                            client.receive_write(buffer, len);
+                        });
+                    } else {
+                        // Fall back to native client
+                        self.client.map(|client| {
+                            client.write_complete(buffer, len, Ok(()));
+                        });
+                    }
                 }
                 self.rx_len.set(0);
             }
             OperState::Read => {
-                // Read complete - return TX buffer
-                self.tx_buffer.take();
+                // Read complete - return TX buffer to client
+                if let Some(buffer) = self.tx_buffer.take() {
+                    // Prioritize HIL TX client (for MCTP) over native client
+                    if self.hil_tx_client.is_some() {
+                        self.hil_tx_client.map(|client| {
+                            client.send_done(buffer, Ok(()));
+                        });
+                    }
+                }
                 self.tx_len.set(0);
                 self.tx_idx.set(0);
             }
             OperState::Ibi => {
                 // IBI complete (EVENT handler will handle hot-join separately)
+
+                // If we have a TX buffer queued (from a pending read that wasn't completed),
+                // we need to return it to the client
+                if let Some(buffer) = self.tx_buffer.take() {
+                    if self.hil_tx_client.is_some() {
+                        self.hil_tx_client.map(|client| {
+                            client.send_done(buffer, Err(ErrorCode::CANCEL));
+                        });
+                    }
+                }
+                self.tx_len.set(0);
+                self.tx_idx.set(0);
+
                 self.client.map(|client| client.ibi_complete(Ok(())));
             }
             OperState::Idle => {
                 // Check for RXPEND in case there's unexpected data
                 if (regs.status.get() & STATUS::RXPEND::SET.value) != 0 {
-                    kernel::debug!("I3C Target: Unexpected RXPEND in IDLE state, flushing");
                     regs.datactrl.modify(DATACTRL::FLUSHFB::SET);
                 }
             }
         }
-
-        // Return to idle state
-        self.state.set(OperState::Idle);
     }
 
     /// Set RX buffer for receiving writes
@@ -1648,7 +1704,105 @@ impl<'a> I3cTarget<'a> {
         // If we're already in a read operation, start transmitting
         if self.state.get() == OperState::Read {
             self.handle_tx();
+        } else {
+            // Send IBI to notify controller that data is ready to be read
+            // Only send MDB, the actual data will be read in the subsequent master read transaction
+            let _ = self.send_ibi_with_len(MDB_PENDING_READ_MCTP, 0);
+
+            // Reset state to Idle immediately after IBI so that when the master responds
+            // with a read request, handle_matched() will work correctly
+            self.state.set(OperState::Idle);
+
+            // CRITICAL: Pre-fill TX FIFO immediately after IBI to prevent URUNNACK error
+            // The master may respond to the IBI very quickly with a read request.
+            // If the TX FIFO is empty when the master reads, it will cause URUNNACK (ERRWARN bit 2).
+            if self.transfer_mode.get() == TransferMode::Fifo {
+                self.tx_buffer.map(|buffer| {
+                    let regs = self.registers;
+                    let tx_len = self.tx_len.get();
+                    let mut idx = 0;
+
+                    // Fill TX FIFO with available data
+                    while !regs.datactrl.is_set(DATACTRL::TXFULL) && idx < tx_len {
+                        if idx == tx_len - 1 {
+                            // Last byte - use WDATABE
+                            regs.wdatabe
+                                .set(WDATABE::DATA.val(buffer[idx] as u32).value);
+                        } else {
+                            // Not last byte - use WDATAB without END
+                            regs.wdatab.set(WDATAB::DATA.val(buffer[idx] as u32).value);
+                        }
+                        idx += 1;
+                    }
+
+                    self.tx_idx.set(idx);
+                });
+            }
+
+            // The controller should respond to the IBI by initiating a read transaction,
+            // at which point handle_matched() will be called to continue the data transfer if needed.
         }
+
+        Ok(())
+    }
+
+    /// Send In-Band Interrupt (IBI) with simple length parameter
+    ///
+    /// This is a simplified version similar to the runtime/kernel/drivers/i3c/src/core.rs implementation.
+    /// It sends an IBI with MDB and a 2-byte length payload (big-endian).
+    ///
+    /// # Arguments
+    /// * `mdb` - Mandatory Data Byte to send with the IBI
+    /// * `len` - Length value to send as 2-byte payload (converted to big-endian)
+    ///
+    /// # Reference
+    /// Based on runtime/kernel/drivers/i3c/src/core.rs send_ibi() implementation
+    pub fn send_ibi_with_len(&self, mdb: u8, len: u16) -> Result<(), ErrorCode> {
+        let regs = self.registers;
+
+        // Check if IBI is disabled by the controller
+        if regs.status.is_set(STATUS::IBIDIS) {
+            return Err(ErrorCode::NOSUPPORT);
+        }
+
+        // Set state to IBI
+        self.state.set(OperState::Ibi);
+
+        // Write MDB (Mandatory Data Byte) to CTRL.IBIDATA field (bits 15:8)
+        let mut ctrl_value = (mdb as u32) << 8;
+
+        // Handle no extended data case
+        if len == 0 {
+            // No extended data
+            // Trigger IBI by setting EVENT field to EmitIBI (0x1)
+            ctrl_value |= 1;
+            // Write the complete CTRL register value
+            regs.ctrl.set(ctrl_value);
+            return Ok(());
+        }
+
+        // Write 2-byte length payload (big-endian)
+        let len_bytes = len.to_be_bytes();
+
+        if self.transfer_mode.get() == TransferMode::Fifo {
+            // Write first byte (MSB)
+            regs.wdatab.set(WDATAB::DATA.val(len_bytes[0] as u32).value);
+            // Write second byte (LSB) as end
+            regs.wdatabe
+                .set(WDATABE::DATA.val(len_bytes[1] as u32).value);
+        }
+
+        // Set IBIEXT1.CNT to 0
+        regs.ibiext1.set(0);
+
+        // Set EXTDATA bit (bit 3) to indicate extended data is present
+        ctrl_value |= 1 << 3;
+
+        // Trigger IBI by setting EVENT field to EmitIBI (0x1)
+        ctrl_value |= 1;
+
+        // Write the complete CTRL register value
+        regs.ctrl.set(ctrl_value);
 
         Ok(())
     }
@@ -1670,11 +1824,7 @@ impl<'a> I3cTarget<'a> {
     ///    - Set IBIEXT1.CNT to 0
     ///    - Set CTRL.EXTDATA bit
     /// 3. Trigger IBI by setting CTRL.EVENT to EmitIBI (0x1)
-    pub fn send_ibi(&self, mdb: u8, payload: Option<&[u8]>) -> Result<(), ErrorCode> {
-        // if self.state.get() != OperState::Idle {
-        //     return Err(ErrorCode::BUSY);
-        // }
-
+    pub fn send_ibi_with_payload(&self, mdb: u8, payload: Option<&[u8]>) -> Result<(), ErrorCode> {
         let regs = self.registers;
 
         // Check if IBI is disabled by the controller
@@ -1731,9 +1881,6 @@ impl<'a> I3cTarget<'a> {
     /// Request Hot-Join to join the I3C bus
     /// This allows a device without a static address to request dynamic address assignment
     pub fn request_hotjoin(&self) -> Result<(), ErrorCode> {
-        // show debug message
-        kernel::debug!("I3C Target: Requesting Hot-Join");
-
         let regs = self.registers;
 
         // Check if we're in a valid state to request hot-join
@@ -1752,27 +1899,11 @@ impl<'a> I3cTarget<'a> {
         // Temporarily disable slave mode to emit hot-join
         regs.config.modify(CONFIG::SLVENA::Disabled);
 
-        // dump registers for debug
-        kernel::debug!(
-            "I3C Target Registers before Hot-Join: CTRL={:#X}, STATUS={:#X}, CONFIG={:#X}",
-            regs.ctrl.get(),
-            regs.status.get(),
-            regs.config.get(),
-        );
-
         // Emit hot-join request
         regs.ctrl.set(CTRL::EVENT::EmitHotJoin.value);
 
         // Re-enable slave mode
         regs.config.modify(CONFIG::SLVENA::Enabled);
-
-        // dump registers for debug
-        kernel::debug!(
-            "I3C Target Registers after Hot-Join: CTRL={:#X}, STATUS={:#X}, CONFIG={:#X}",
-            regs.ctrl.get(),
-            regs.status.get(),
-            regs.config.get(),
-        );
 
         Ok(())
     }
@@ -1848,14 +1979,12 @@ impl<'a> I3cTarget<'a> {
 
 // Implement the I3CTarget trait from i3c_driver for MCTP compatibility
 impl<'a> hil::I3CTarget<'a> for I3cTarget<'a> {
-    fn set_tx_client(&self, _client: &'a dyn hil::TxClient) {
-        // Note: This is a simplified implementation. For full functionality,
-        // we would need to store the client and properly bridge the callbacks.
-        // For now, this allows compilation but TX callbacks may not work properly.
+    fn set_tx_client(&self, client: &'a dyn hil::TxClient) {
+        self.hil_tx_client.set(client);
     }
 
-    fn set_rx_client(&self, _client: &'a dyn hil::RxClient) {
-        // Similar to TX, we would need proper adapter implementation
+    fn set_rx_client(&self, client: &'a dyn hil::RxClient) {
+        self.hil_rx_client.set(client);
     }
 
     fn set_rx_buffer(&self, rx_buf: &'static mut [u8]) {

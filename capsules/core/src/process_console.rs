@@ -209,13 +209,13 @@ pub struct KernelAddresses {
 }
 
 /// Callback function type for reading device memory.
-/// 
+///
 /// Takes an address and size (in bytes: 1, 2, 4, or 8) and returns
 /// the value read as a u64, or None if the address is invalid.
 pub type DevmemReadFn = fn(addr: usize, size: usize) -> Option<u64>;
 
 /// Callback function type for writing device memory.
-/// 
+///
 /// Takes an address, size (in bytes: 1, 2, 4, or 8), and value to write.
 /// Returns true if the write was successful, false otherwise.
 pub type DevmemWriteFn = fn(addr: usize, size: usize, value: u64) -> bool;

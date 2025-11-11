@@ -19,4 +19,5 @@ workspace = true
 
 [features]
 uart_interrupt_driven = []
+debug-i3c = []
 default = ["uart_interrupt_driven"]

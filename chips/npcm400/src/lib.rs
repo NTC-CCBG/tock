@@ -28,9 +28,9 @@ pub mod spim;
 pub mod itim;
 pub mod uart;
 // pub mod miwu;
-pub mod twd;
 pub mod clock;
 pub mod scfg;
+pub mod twd;
 
 use cortexm4f::{initialize_ram_jump_to_main, scb, unhandled_interrupt, CortexM4F, CortexMVariant};
 
