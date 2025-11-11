@@ -17,6 +17,7 @@ pub mod nvic;
 // pub mod adc;
 // pub mod dma;
 // pub mod exti;
+pub mod fiu;
 // pub mod flash;
 pub mod gpio;
 pub mod i3c;

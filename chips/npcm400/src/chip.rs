@@ -24,6 +24,7 @@ pub struct Npcm400DefaultPeripherals<'a> {
     pub wdt: crate::twd::Wdg<'a>,
     pub itim: crate::itim::Itim<'a>,
     pub spim: crate::spim::Spim<'static>,
+    pub fiu: crate::fiu::Fiu<'static>,
     pub i3c1: crate::i3c::I3cTarget<'a>,
     pub i3c2: crate::i3c::I3cTarget<'a>,
     pub i3c3: crate::i3c::I3cTarget<'a>,
@@ -41,6 +42,7 @@ impl Npcm400DefaultPeripherals<'_> {
         let wdt0 = crate::twd::Wdg::new();
         let itim = crate::itim::Itim::new(crate::clock::HighClocks::ITIM1);
         let spim = crate::spim::Spim::new();
+        let fiu = crate::fiu::Fiu::new(kernel::deferred_call::DeferredCall::new());
 
         // Create all 6 I3C bus instances
         let i3c1 = crate::i3c::I3cTarget::new_i3c1();
@@ -57,6 +59,7 @@ impl Npcm400DefaultPeripherals<'_> {
             wdt: wdt0,
             itim: itim,
             spim,
+            fiu,
             i3c1,
             i3c2,
             i3c3,
@@ -72,6 +75,8 @@ impl Npcm400DefaultPeripherals<'_> {
         self.itim.set_clock(&self.clock);
         // self.gpio_ports.setup_circular_deps();
 
+        // Register deferred call clients
+        kernel::deferred_call::DeferredCallClient::register(&self.fiu);
         // kernel::deferred_call::DeferredCallClient::register(&self.uart1);
     }
 }
