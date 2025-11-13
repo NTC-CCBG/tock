@@ -16,12 +16,12 @@
 
 use core::cell::Cell;
 use i3c_driver::hil;
-use kernel::ErrorCode;
-use kernel::utilities::StaticRef;
 use kernel::utilities::cells::OptionalCell;
 use kernel::utilities::cells::TakeCell;
 use kernel::utilities::registers::interfaces::{ReadWriteable, Readable, Writeable};
-use kernel::utilities::registers::{ReadOnly, ReadWrite, register_bitfields, register_structs};
+use kernel::utilities::registers::{register_bitfields, register_structs, ReadOnly, ReadWrite};
+use kernel::utilities::StaticRef;
+use kernel::ErrorCode;
 
 /// I3C Bus default characteristics
 const BUS_CHARACTERISTICS_TARGET: u8 = 0x26; // Standard target BCR
@@ -1412,6 +1412,11 @@ impl<'a> I3cTarget<'a> {
             // The RXPEND interrupt handler will read the actual data from FIFO
             self.state.set(OperState::Write);
             self.rx_len.set(0); // Reset RX length counter
+
+            // Flush TX FIFO to clear any stale response data from previous read
+            // This prevents old data from being sent if master reads without us preparing a response
+            let regs = self.registers;
+            regs.datactrl.modify(DATACTRL::FLUSHTB::SET);
         } else {
             // Read request from controller - target must send data
 
@@ -1701,6 +1706,11 @@ impl<'a> I3cTarget<'a> {
         self.tx_len.set(len);
         self.tx_idx.set(0);
 
+        // Flush TX FIFO to clear any residual data from previous transmissions
+        // This prevents old data from being concatenated with new responses
+        let regs = self.registers;
+        regs.datactrl.modify(DATACTRL::FLUSHTB::SET);
+
         // If we're already in a read operation, start transmitting
         if self.state.get() == OperState::Read {
             self.handle_tx();
@@ -1709,9 +1719,10 @@ impl<'a> I3cTarget<'a> {
             // Only send MDB, the actual data will be read in the subsequent master read transaction
             let _ = self.send_ibi_with_len(MDB_PENDING_READ_MCTP, 0);
 
-            // Reset state to Idle immediately after IBI so that when the master responds
-            // with a read request, handle_matched() will work correctly
-            self.state.set(OperState::Idle);
+            // Set state to Read since we've prepared read response data
+            // This ensures handle_start() will properly call send_done() when the next
+            // command arrives via repeated START, returning tx_buffer to MCTP
+            self.state.set(OperState::Read);
 
             // CRITICAL: Pre-fill TX FIFO immediately after IBI to prevent URUNNACK error
             // The master may respond to the IBI very quickly with a read request.
