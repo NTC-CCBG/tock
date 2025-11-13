@@ -5,7 +5,6 @@
 //! Watchdog timer
 
 use core::cell::Cell;
-use kernel::platform::chip::ClockInterface;
 use kernel::utilities::cells::OptionalCell;
 use kernel::utilities::registers::interfaces::{ReadWriteable, Readable, Writeable};
 use kernel::utilities::registers::{register_bitfields, register_structs, ReadWrite};
@@ -109,10 +108,12 @@ impl<'a> Wdg<'a> {
         self.enabled.set(true);
     }
 
-    fn set_window(&self, value: u32) {}
+    #[allow(dead_code)]
+    fn set_window(&self, _value: u32) {}
 
     /// Modifies the time base of the prescaler.
-    fn set_prescaler(&self, time_base: u8) {}
+    #[allow(dead_code)]
+    fn set_prescaler(&self, _time_base: u8) {}
 
     pub fn start(&self) {}
 

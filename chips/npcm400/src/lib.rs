@@ -17,18 +17,21 @@ pub mod nvic;
 // pub mod adc;
 // pub mod dma;
 // pub mod exti;
+pub mod fiu;
 // pub mod flash;
 pub mod gpio;
+pub mod i3c;
 // pub mod i2c;
 // pub mod rcc;
 // pub mod spi;
+pub mod spim;
 // pub mod syscfg;
 pub mod itim;
 pub mod uart;
 // pub mod miwu;
-pub mod twd;
 pub mod clock;
 pub mod scfg;
+pub mod twd;
 
 use cortexm4f::{initialize_ram_jump_to_main, scb, unhandled_interrupt, CortexM4F, CortexMVariant};
 
@@ -134,12 +137,12 @@ pub static IRQS: [unsafe extern "C" fn(); 82] = [
     CortexM4F::GENERIC_ISR, // ADC4 (61)
     unhandled_interrupt,    // (62)
     unhandled_interrupt,    // (63)
-    CortexM4F::GENERIC_ISR, // COMP1_2_3 (64)
-    CortexM4F::GENERIC_ISR, // COMP4_5_6 (65)
-    CortexM4F::GENERIC_ISR, // COMP7 (66)
-    unhandled_interrupt,    //(67)
-    unhandled_interrupt,    //(68)
-    unhandled_interrupt,    //(69)
+    CortexM4F::GENERIC_ISR, // I3C1 (64)
+    CortexM4F::GENERIC_ISR, // I3C2 (65)
+    CortexM4F::GENERIC_ISR, // I3C3 (66)
+    CortexM4F::GENERIC_ISR, // I3C4 (67)
+    CortexM4F::GENERIC_ISR, // I3C5 (68)
+    CortexM4F::GENERIC_ISR, // I3C6 (69)
     unhandled_interrupt,    //(70)
     unhandled_interrupt,    //(71)
     unhandled_interrupt,    //(72)

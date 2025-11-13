@@ -12,10 +12,12 @@ edition.workspace = true
 cortexm4f = { path = "../../arch/cortex-m4f" }
 enum_primitive = { path = "../../libraries/enum_primitive" }
 kernel = { path = "../../kernel" }
+i3c-driver = { path = "../../../../NTC_caliptra-mcu-sw/runtime/kernel/drivers/i3c" }
 
 [lints]
 workspace = true
 
 [features]
 uart_interrupt_driven = []
+debug-i3c = []
 default = ["uart_interrupt_driven"]
