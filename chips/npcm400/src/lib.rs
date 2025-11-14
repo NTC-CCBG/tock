@@ -22,6 +22,7 @@ pub mod fiu;
 pub mod gpio;
 pub mod i3c;
 // pub mod i2c;
+pub mod pdma;
 // pub mod rcc;
 // pub mod spi;
 pub mod spim;
@@ -66,95 +67,93 @@ pub static BASE_VECTORS: [unsafe extern "C" fn(); 16] = [
     CortexM4F::SYSTICK_HANDLER, // SysTick
 ];
 
-// STM32F303VCT6 has total of 82 interrupts
-// Extracted from `CMSIS/Device/ST/STM32F3xx/Include/npcm400.h`
-// NOTE: There are missing IRQn between 0 and 81
+// NPCM400 has total of 82 interrupts (INT0..INT81)
+// Mapping corrected per NPCM400 datasheet.
 #[cfg_attr(all(target_arch = "arm", target_os = "none"), link_section = ".irqs")]
-// used Ensures that the symbol is kept until the final binary
 #[cfg_attr(all(target_arch = "arm", target_os = "none"), used)]
 pub static IRQS: [unsafe extern "C" fn(); 82] = [
-    CortexM4F::GENERIC_ISR, // WWDG (0)
-    CortexM4F::GENERIC_ISR, // PVD (1)
-    CortexM4F::GENERIC_ISR, // TAMP_STAMP (2)
-    CortexM4F::GENERIC_ISR, // RTC_WKUP (3)
-    CortexM4F::GENERIC_ISR, // FLASH (4)
-    CortexM4F::GENERIC_ISR, // RCC (5)
-    CortexM4F::GENERIC_ISR, // EXTI0 (6)
-    CortexM4F::GENERIC_ISR, // EXTI1 (7)
-    CortexM4F::GENERIC_ISR, // EXTI2 (8)
-    CortexM4F::GENERIC_ISR, // EXTI3 (9)
-    CortexM4F::GENERIC_ISR, // EXTI4 (10)
-    CortexM4F::GENERIC_ISR, // DMA1_Stream0 (11)
-    CortexM4F::GENERIC_ISR, // DMA1_Stream1 (12)
-    CortexM4F::GENERIC_ISR, // DMA1_Stream2 (13)
-    CortexM4F::GENERIC_ISR, // DMA1_Stream3 (14)
-    CortexM4F::GENERIC_ISR, // DMA1_Stream4 (15)
-    CortexM4F::GENERIC_ISR, // DMA1_Stream5 (16)
-    CortexM4F::GENERIC_ISR, // DMA1_Stream6 (17)
-    CortexM4F::GENERIC_ISR, // ADC1_2 (18)
-    CortexM4F::GENERIC_ISR, // HP_USB or CAN1_TX (19)
-    CortexM4F::GENERIC_ISR, // LP_USB or CAN1_RX0 (20)
-    CortexM4F::GENERIC_ISR, // CAN1_RX1 (21)
-    CortexM4F::GENERIC_ISR, // CAN1_SCE (22)
-    CortexM4F::GENERIC_ISR, // EXTI9_5 (23)
-    CortexM4F::GENERIC_ISR, // TIM1_BRK_TIM9 (24)
-    CortexM4F::GENERIC_ISR, // TIM1_UP_TIM10 (25)
-    CortexM4F::GENERIC_ISR, // TIM1_TRG_COM_TIM11 (26)
-    CortexM4F::GENERIC_ISR, // TIM1_CC (27)
-    CortexM4F::GENERIC_ISR, // TIM2 (28)
-    CortexM4F::GENERIC_ISR, // TIM3 (29)
-    CortexM4F::GENERIC_ISR, // TIM4 (30)
-    CortexM4F::GENERIC_ISR, // I2C1_EV (31)
-    CortexM4F::GENERIC_ISR, // I2C1_ER (32)
-    CortexM4F::GENERIC_ISR, // I2C2_EV (33)
-    CortexM4F::GENERIC_ISR, // I2C2_ER (34)
-    CortexM4F::GENERIC_ISR, // SPI1 (35)
-    CortexM4F::GENERIC_ISR, // SPI2 (36)
-    CortexM4F::GENERIC_ISR, // USART1 (37)
-    CortexM4F::GENERIC_ISR, // USART2 (38)
-    CortexM4F::GENERIC_ISR, // USART3 (39)
-    CortexM4F::GENERIC_ISR, // EXTI15_10 (40)
-    CortexM4F::GENERIC_ISR, // RTC_Alarm (41)
-    CortexM4F::GENERIC_ISR, // USB_WKUP (42)
-    CortexM4F::GENERIC_ISR, // TIM8_BRK_TIM12 (43)
-    CortexM4F::GENERIC_ISR, // TIM8_UP_TIM13 (44)
-    CortexM4F::GENERIC_ISR, // TIM8_TRG_COM_TIM14 (45)
-    CortexM4F::GENERIC_ISR, // TIM8_CC (46)
-    CortexM4F::GENERIC_ISR, // ADC3 (47)
-    unhandled_interrupt,    // (48)
-    unhandled_interrupt,    // (49)
-    unhandled_interrupt,    // (50)
-    CortexM4F::GENERIC_ISR, // SPI3 (51)
-    CortexM4F::GENERIC_ISR, // UART4 (52)
-    CortexM4F::GENERIC_ISR, // UART5 (53)
-    CortexM4F::GENERIC_ISR, // TIM6_DAC (54)
-    CortexM4F::GENERIC_ISR, // TIM7 (55)
-    CortexM4F::GENERIC_ISR, // DMA2_Stream0 (56)
-    CortexM4F::GENERIC_ISR, // DMA2_Stream1 (57)
-    CortexM4F::GENERIC_ISR, // DMA2_Stream2 (58)
-    CortexM4F::GENERIC_ISR, // DMA2_Stream3 (59)
-    CortexM4F::GENERIC_ISR, // DMA2_Stream4 (60)
-    CortexM4F::GENERIC_ISR, // ADC4 (61)
-    unhandled_interrupt,    // (62)
-    unhandled_interrupt,    // (63)
-    CortexM4F::GENERIC_ISR, // I3C1 (64)
-    CortexM4F::GENERIC_ISR, // I3C2 (65)
-    CortexM4F::GENERIC_ISR, // I3C3 (66)
-    CortexM4F::GENERIC_ISR, // I3C4 (67)
-    CortexM4F::GENERIC_ISR, // I3C5 (68)
-    CortexM4F::GENERIC_ISR, // I3C6 (69)
-    unhandled_interrupt,    //(70)
-    unhandled_interrupt,    //(71)
-    unhandled_interrupt,    //(72)
-    unhandled_interrupt,    //(73)
-    CortexM4F::GENERIC_ISR, // USB_HP (74)
-    CortexM4F::GENERIC_ISR, // USB_LP (75)
-    CortexM4F::GENERIC_ISR, // USB_RMP_WKUP (76)
-    unhandled_interrupt,    // (77)
-    unhandled_interrupt,    // (78)
-    unhandled_interrupt,    // (79)
-    unhandled_interrupt,    // (80)
-    CortexM4F::GENERIC_ISR, // FPU (81)
+    CortexM4F::GENERIC_ISR, // INT0  SMB2 module interrupt
+    CortexM4F::GENERIC_ISR, // INT1  Reserved / I3CI2 module interrupt
+    CortexM4F::GENERIC_ISR, // INT2  CAN1 interrupt line_0
+    CortexM4F::GENERIC_ISR, // INT3  Host I/F PM Channel1-4 Output Buffer Empty
+    CortexM4F::GENERIC_ISR, // INT4  Host I/F PM Channel1-4 Input Buffer Full
+    unhandled_interrupt,    // INT5  Reserved
+    unhandled_interrupt,    // INT6  Reserved
+    CortexM4F::GENERIC_ISR, // INT7  Shared Memory / Mailbox host write or clear interrupt
+    CortexM4F::GENERIC_ISR, // INT8  CAN1 interrupt line_1
+    CortexM4F::GENERIC_ISR, // INT9  PECI event
+    CortexM4F::GENERIC_ISR, // INT10 Debug Port 80 interrupt
+    CortexM4F::GENERIC_ISR, // INT11 eSPI interrupt
+    CortexM4F::GENERIC_ISR, // INT12 MSWC wake-up (MSWCI) or TWD system tick (T0OUT)
+    CortexM4F::GENERIC_ISR, // INT13 USB2.0 DC interrupt / USBH1.1 interrupt
+    CortexM4F::GENERIC_ISR, // INT14 FIU interrupt
+    CortexM4F::GENERIC_ISR, // INT15 PKA interrupt / Reserved
+    CortexM4F::GENERIC_ISR, // INT16 AES interrupt / Reserved
+    CortexM4F::GENERIC_ISR, // INT17 LCT_INT or CAN2 interrupt line_0
+    CortexM4F::GENERIC_ISR, // INT18 SPIP1_INT or SPIM_INT interrupt
+    CortexM4F::GENERIC_ISR, // INT19 RNG interrupt
+    CortexM4F::GENERIC_ISR, // INT20 SMB6 module or I3CI1 module interrupt
+    CortexM4F::GENERIC_ISR, // INT21 ADC interrupt (ADCI)
+    CortexM4F::GENERIC_ISR, // INT22 GDMA interrupt or PDMA interrupt
+    CortexM4F::GENERIC_ISR, // INT23 CR_UART1
+    CortexM4F::GENERIC_ISR, // INT24 MFT16-1 (MFT16_INT1 or MFT16_INT2)
+    CortexM4F::GENERIC_ISR, // INT25 MFT16-2 (MFT16_INT1 or MFT16_INT2)
+    CortexM4F::GENERIC_ISR, // INT26 MFT16-3 (MFT16_INT1 or MFT16_INT2)
+    CortexM4F::GENERIC_ISR, // INT27 Legacy (KBC, PRT, UARTA-UARTF, CIR)
+    CortexM4F::GENERIC_ISR, // INT28 Reserved / FLM interrupt
+    CortexM4F::GENERIC_ISR, // INT29 ITIM32-1 interrupt
+    CortexM4F::GENERIC_ISR, // INT30 ITIM32-2 interrupt
+    CortexM4F::GENERIC_ISR, // INT31 ITIM32-3 interrupt
+    CortexM4F::GENERIC_ISR, // INT32 ITIM32-4 interrupt
+    CortexM4F::GENERIC_ISR, // INT33 ITIM32-5 interrupt
+    CortexM4F::GENERIC_ISR, // INT34 ITIM32-6 interrupt
+    CortexM4F::GENERIC_ISR, // INT35 SMB1 (with FIFO) module interrupt
+    CortexM4F::GENERIC_ISR, // INT36 EMAC interrupt
+    CortexM4F::GENERIC_ISR, // INT37 SMB3 module interrupt
+    CortexM4F::GENERIC_ISR, // INT38 SMB4 module interrupt
+    CortexM4F::GENERIC_ISR, // INT39 SMB5 module interrupt
+    CortexM4F::GENERIC_ISR, // INT40 MIWU0 WKINTA_0
+    CortexM4F::GENERIC_ISR, // INT41 MIWU0 WKINTB_0
+    CortexM4F::GENERIC_ISR, // INT42 MIWU0 WKINTC_0
+    CortexM4F::GENERIC_ISR, // INT43 MIWU0 WKINTD_0
+    CortexM4F::GENERIC_ISR, // INT44 MIWU0 WKINTE_0
+    CortexM4F::GENERIC_ISR, // INT45 MIWU0 WKINTF_0
+    CortexM4F::GENERIC_ISR, // INT46 MIWU0 WKINTG_0
+    CortexM4F::GENERIC_ISR, // INT47 MIWU0 WKINTH_0
+    CortexM4F::GENERIC_ISR, // INT48 MIWU1 WKINTA_1
+    CortexM4F::GENERIC_ISR, // INT49 MIWU1 WKINTB_1
+    CortexM4F::GENERIC_ISR, // INT50 MIWU1 WKINTC_1
+    CortexM4F::GENERIC_ISR, // INT51 MIWU1 WKINTD_1
+    CortexM4F::GENERIC_ISR, // INT52 CAN2 interrupt line_1
+    CortexM4F::GENERIC_ISR, // INT53 MIWU1 WKINTF_1
+    CortexM4F::GENERIC_ISR, // INT54 MIWU1 WKINTG_1
+    CortexM4F::GENERIC_ISR, // INT55 MIWU1 WKINTH_1
+    CortexM4F::GENERIC_ISR, // INT56 MIWU2 WKINTE_2
+    CortexM4F::GENERIC_ISR, // INT57 MIWU2 WKINTF_2
+    CortexM4F::GENERIC_ISR, // INT58 MIWU2 WKINTG_2
+    CortexM4F::GENERIC_ISR, // INT59 MIWU2 WKINTH_2
+    CortexM4F::GENERIC_ISR, // INT60 MIWU2 WKINTA_2
+    CortexM4F::GENERIC_ISR, // INT61 MIWU2 WKINTB_2
+    CortexM4F::GENERIC_ISR, // INT62 MIWU2 WKINTC_2
+    CortexM4F::GENERIC_ISR, // INT63 MIWU2 WKINTD_2
+    CortexM4F::GENERIC_ISR, // INT64 I3CI1 module interrupt
+    CortexM4F::GENERIC_ISR, // INT65 I3CI2 module interrupt
+    CortexM4F::GENERIC_ISR, // INT66 I3CI3 module interrupt
+    CortexM4F::GENERIC_ISR, // INT67 I3CI4 module interrupt
+    CortexM4F::GENERIC_ISR, // INT68 I3CI5 module interrupt
+    CortexM4F::GENERIC_ISR, // INT69 I3CI6 module interrupt
+    CortexM4F::GENERIC_ISR, // INT70 SMB7 module interrupt
+    CortexM4F::GENERIC_ISR, // INT71 SMB8 module interrupt
+    CortexM4F::GENERIC_ISR, // INT72 SMB9 module interrupt
+    CortexM4F::GENERIC_ISR, // INT73 SMB10 module interrupt
+    CortexM4F::GENERIC_ISR, // INT74 SMB11 module interrupt
+    CortexM4F::GENERIC_ISR, // INT75 SMB12 module interrupt
+    CortexM4F::GENERIC_ISR, // INT76 CR_UART2
+    CortexM4F::GENERIC_ISR, // INT77 CR_UART3
+    CortexM4F::GENERIC_ISR, // INT78 CR_UART4
+    CortexM4F::GENERIC_ISR, // INT79 Reserved / USBH1.1 interrupt
+    CortexM4F::GENERIC_ISR, // INT80 Reserved / SIOX1
+    CortexM4F::GENERIC_ISR, // INT81 Reserved / SIOX2
 ];
 
 pub unsafe fn init() {
