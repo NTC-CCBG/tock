@@ -890,6 +890,41 @@ impl<'a> I3cTarget<'a> {
         self.deinit_dma();
     }
 
+    /// Debug GPIOs
+    pub fn enable_debug_gpio86_87(&self) {
+        unsafe {
+            // GPIO86
+            *(0x400C_3011_i32 as *mut u8) &= !0x80_u8; // mux: b7
+            *(0x4009_1000_i32 as *mut u8) &= !0x40_u8; // val: b6
+            *(0x4009_1002_i32 as *mut u8) |= 0x40_u8; // dir: b6
+
+            // GPIO87
+            *(0x400C_3011_i32 as *mut u8) &= !0x20_u8; // mux: b5
+            *(0x4009_1000_i32 as *mut u8) &= !0x80_u8; // val: b7
+            *(0x4009_1002_i32 as *mut u8) |= 0x80_u8; // dir: b7
+        }
+    }
+
+    pub fn set_debug_gpio86(&self, high: bool) {
+        unsafe {
+            if high {
+                *(0x4009_1000_i32 as *mut u8) |= 0x40_u8; // Set GPIO86 high
+            } else {
+                *(0x4009_1000_i32 as *mut u8) &= !0x40_u8; // Set GPIO86 low
+            }
+        }
+    }
+
+    pub fn set_debug_gpio87(&self, high: bool) {
+        unsafe {
+            if high {
+                *(0x4009_1000_i32 as *mut u8) |= 0x80_u8; // Set GPIO87 high
+            } else {
+                *(0x4009_1000_i32 as *mut u8) &= !0x80_u8; // Set GPIO87 low
+            }
+        }
+    }
+
     /// Initialize DMA controller for I3C transfers
     fn init_dma(&self) {
         let dma = self.dma_registers;
@@ -1134,6 +1169,8 @@ impl<'a> I3cTarget<'a> {
         // Flush FIFOs
         regs.datactrl
             .modify(DATACTRL::FLUSHTB::SET + DATACTRL::FLUSHFB::SET);
+
+        self.enable_debug_gpio86_87();
     }
 
     /// Handle I3C interrupt
@@ -1156,6 +1193,8 @@ impl<'a> I3cTarget<'a> {
                 return;
             }
         }
+
+        self.set_debug_gpio87(true);
 
         // Loop until all interrupts are processed
         // This ensures new interrupts that arrive during processing are also handled
@@ -1262,6 +1301,8 @@ impl<'a> I3cTarget<'a> {
             // Re-check interrupts to handle any new interrupts that arrived during processing
             int_masked = regs.intmasked.get();
         }
+
+        self.set_debug_gpio87(false);
     }
 
     /// Handle error condition
@@ -1684,6 +1725,8 @@ impl<'a> I3cTarget<'a> {
             regs.status.set(STATUS::START::SET.value);
         }
 
+        self.set_debug_gpio86(true);
+
         // Return to idle state BEFORE calling client callbacks
         // This allows clients (e.g., MCTP) to immediately queue TX data in response
         self.state.set(OperState::Idle);
@@ -1745,6 +1788,8 @@ impl<'a> I3cTarget<'a> {
                 }
             }
         }
+
+        self.set_debug_gpio86(false);
     }
 
     /// Set RX buffer for receiving writes
