@@ -31,6 +31,7 @@ pub struct Npcm400DefaultPeripherals<'a> {
     pub i3c4: crate::i3c::I3cTarget<'a>,
     pub i3c5: crate::i3c::I3cTarget<'a>,
     pub i3c6: crate::i3c::I3cTarget<'a>,
+    pub pdma: &'static crate::pdma::Pdma,
 }
 
 impl Npcm400DefaultPeripherals<'_> {
@@ -52,6 +53,8 @@ impl Npcm400DefaultPeripherals<'_> {
         let i3c5 = crate::i3c::I3cTarget::new_i3c5();
         let i3c6 = crate::i3c::I3cTarget::new_i3c6();
 
+        let pdma = &crate::pdma::PDMA;
+
         Self {
             clock: source_clock,
             scfg: crate::scfg::Scfg::new(),
@@ -66,6 +69,7 @@ impl Npcm400DefaultPeripherals<'_> {
             i3c4,
             i3c5,
             i3c6,
+            pdma,
         }
     }
 
@@ -100,6 +104,8 @@ impl InterruptService for Npcm400DefaultPeripherals<'_> {
             nvic::I3C4 => self.i3c4.handle_interrupt(),
             nvic::I3C5 => self.i3c5.handle_interrupt(),
             nvic::I3C6 => self.i3c6.handle_interrupt(),
+            // PDMA interrupt
+            nvic::GDMA_PDMA => crate::pdma::PDMA.handle_interrupt(),
             _ => return false,
         }
         true

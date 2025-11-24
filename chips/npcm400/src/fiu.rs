@@ -697,7 +697,7 @@ impl<'a> hil::flash::Flash for Fiu<'a> {
 
                 Ok(())
             }
-            Err(e) => Err((e, buf))
+            Err(e) => Err((e, buf)),
         }
     }
 

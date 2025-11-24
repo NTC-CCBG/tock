@@ -15,76 +15,102 @@
 use core::cell::Cell;
 use kernel::utilities::cells::{OptionalCell, VolatileCell};
 use kernel::utilities::registers::interfaces::{Readable, Writeable};
-use kernel::utilities::registers::{register_bitfields, ReadOnly, ReadWrite, WriteOnly};
+use kernel::utilities::registers::{
+    register_bitfields, register_structs, ReadOnly, ReadWrite, WriteOnly,
+};
 use kernel::utilities::StaticRef;
 use kernel::ErrorCode;
+
+// Debug helper for PDMA driver
+macro_rules! pdma_debug {
+    ($($arg:tt)*) => (kernel::debug!($($arg)*));
+}
 
 /// Base address for PDMA controller
 const PDMA_BASE: StaticRef<PdmaRegisters> =
     unsafe { StaticRef::new(0x4001_5000 as *const PdmaRegisters) };
 
-/// PDMA Register layout
-#[repr(C)]
-struct PdmaRegisters {
-    // Descriptor Table Control Registers (0x000 - 0x0DC)
-    dsct: [DescriptorTableRegs; 14],
-
-    _reserved0: [u8; 0x20],
-
-    // Current Scatter-Gather Descriptor Table Address Registers (0x100 - 0x134)
-    curscat: [ReadOnly<u32>; 14],
-
-    _reserved1: [u8; 0x2C8],
-
-    // Control and Status Registers (0x400 onwards)
-    chctl: ReadWrite<u32, CHCTL::Register>,     // 0x400
-    stop: WriteOnly<u32>,                       // 0x404
-    swreq: WriteOnly<u32>,                      // 0x408
-    trgsts: ReadOnly<u32>,                      // 0x40C
-    priset: ReadWrite<u32>,                     // 0x410
-    priclr: WriteOnly<u32>,                     // 0x414
-    inten: ReadWrite<u32>,                      // 0x418
-    intsts: ReadWrite<u32, INTSTS::Register>,   // 0x41C
-    abtsts: ReadWrite<u32, ABTSTS::Register>,   // 0x420
-    tdsts: ReadWrite<u32, TDSTS::Register>,     // 0x424
-    scatsts: ReadWrite<u32, SCATSTS::Register>, // 0x428
-    tactsts: ReadOnly<u32>,                     // 0x42C
-    _reserved2: [u8; 0xC],
-    scatba: ReadWrite<u32>, // 0x43C
-    _reserved3: [u8; 0x40],
-    reqsel0_3: ReadWrite<u32, REQSEL::Register>,  // 0x480
-    reqsel4_7: ReadWrite<u32, REQSEL::Register>,  // 0x484
-    reqsel8_11: ReadWrite<u32, REQSEL::Register>, // 0x488
-    reqsel12_13: ReadWrite<u32, REQSEL::Register>, // 0x48C
+register_structs! {
+    DescriptorTableRegs {
+        (0x000 => ctl: ReadWrite<u32, DSCT_CTL::Register>),
+        (0x004 => endsa: ReadWrite<u32>),
+        (0x008 => endda: ReadWrite<u32>),
+        (0x00C => next: ReadWrite<u32>),
+        (0x010 => @END),
+    }
 }
 
-/// Descriptor Table Registers for each channel
-#[repr(C)]
-struct DescriptorTableRegs {
-    ctl: ReadWrite<u32, DSCT_CTL::Register>, // Control
-    endsa: ReadWrite<u32>,                   // End Source Address
-    endda: ReadWrite<u32>,                   // End Destination Address
-    next: ReadWrite<u32>,                    // Scatter-Gather Next Offset
+register_structs! {
+    PdmaRegisters {
+        (0x000 => dsct: [DescriptorTableRegs; 14]),
+        (0x0E0 => _reserved0: [u8; 0x20]),
+        (0x100 => curscat: [ReadOnly<u32>; 14]),
+        (0x138 => _reserved1: [u8; 0x2C8]),
+        (0x400 => chctl: ReadWrite<u32, CHCTL::Register>),
+        (0x404 => stop: WriteOnly<u32>),
+        (0x408 => swreq: WriteOnly<u32>),
+        (0x40C => trgsts: ReadOnly<u32>),
+        (0x410 => priset: ReadWrite<u32>),
+        (0x414 => priclr: WriteOnly<u32>),
+        (0x418 => inten: ReadWrite<u32>),
+        (0x41C => intsts: ReadWrite<u32, INTSTS::Register>),
+        (0x420 => abtsts: ReadWrite<u32, ABTSTS::Register>),
+        (0x424 => tdsts: ReadWrite<u32, TDSTS::Register>),
+        (0x428 => scatsts: ReadWrite<u32, SCATSTS::Register>),
+        (0x42C => tactsts: ReadOnly<u32>),
+        (0x430 => _reserved2: [u8; 0x0C]),
+        (0x43C => scatba: ReadWrite<u32>),
+        (0x440 => _reserved3: [u8; 0x40]),
+        (0x480 => reqsel0_3: ReadWrite<u32, REQSEL::Register>),
+        (0x484 => reqsel4_7: ReadWrite<u32, REQSEL::Register>),
+        (0x488 => reqsel8_11: ReadWrite<u32, REQSEL::Register>),
+        (0x48C => reqsel12_13: ReadWrite<u32, REQSEL::Register>),
+        (0x490 => @END),
+    }
 }
 
 register_bitfields![u32,
     /// Descriptor Table Control Register
     DSCT_CTL [
-        /// Transfer Count (number of transfers)
+        /// Transfer Count (number of transfers - 1)
         TXCNT OFFSET(16) NUMBITS(14) [],
 
-        /// Request Source Selection
-        /// 00 = Memory to Memory
-        /// 01 = Peripheral to Memory
-        /// 10 = Memory to Peripheral
-        REQSRC OFFSET(13) NUMBITS(2) [
-            MemToMem = 0,
-            PeriphToMem = 1,
-            MemToPeriph = 2
+        /// Transfer Width (data size)
+        /// 00 = 8-bit
+        /// 01 = 16-bit
+        /// 10 = 32-bit
+        TXWIDTH OFFSET(12) NUMBITS(2) [
+            Width8 = 0,
+            Width16 = 1,
+            Width32 = 2
         ],
 
+        /// Destination Address Increment
+        /// 00 = Increment
+        /// 01 = Decrement
+        /// 10 = Reserved
+        /// 11 = Fixed (no increment)
+        DAINC OFFSET(10) NUMBITS(2) [
+            Increment = 0,
+            Decrement = 1,
+            Fixed = 3
+        ],
+
+        /// Source Address Increment
+        /// 00 = Increment
+        /// 01 = Decrement
+        /// 10 = Reserved
+        /// 11 = Fixed (no increment)
+        SAINC OFFSET(8) NUMBITS(2) [
+            Increment = 0,
+            Decrement = 1,
+            Fixed = 3
+        ],
+
+        /// Table Interrupt Disable
+        TBINTDIS OFFSET(7) NUMBITS(1) [],
+
         /// Burst Size
-        /// Number of transfers in a burst request
         /// 000 = 128 transfers
         /// 001 = 64 transfers
         /// 010 = 32 transfers
@@ -93,7 +119,7 @@ register_bitfields![u32,
         /// 101 = 4 transfers
         /// 110 = 2 transfers
         /// 111 = 1 transfer
-        BURSIZE OFFSET(10) NUMBITS(3) [
+        BURSIZE OFFSET(4) NUMBITS(3) [
             Burst128 = 0,
             Burst64 = 1,
             Burst32 = 2,
@@ -104,44 +130,12 @@ register_bitfields![u32,
             Burst1 = 7
         ],
 
-        /// Destination Address Direction
-        /// 00 = Increment
-        /// 01 = Decrement
-        /// 10 = Fixed
-        DADIR OFFSET(8) NUMBITS(2) [
-            Increment = 0,
-            Decrement = 1,
-            Fixed = 2
-        ],
-
-        /// Source Address Direction
-        /// 00 = Increment
-        /// 01 = Decrement
-        /// 10 = Fixed
-        SADIR OFFSET(6) NUMBITS(2) [
-            Increment = 0,
-            Decrement = 1,
-            Fixed = 2
-        ],
-
-        /// Destination Address Increment Size
-        /// 00 = One byte
-        /// 01 = One half-word (2 bytes)
-        /// 10 = One word (4 bytes)
-        DAINC OFFSET(4) NUMBITS(2) [
-            Byte = 0,
-            HalfWord = 1,
-            Word = 2
-        ],
-
-        /// Source Address Increment Size
-        /// 00 = One byte
-        /// 01 = One half-word (2 bytes)
-        /// 10 = One word (4 bytes)
-        SAINC OFFSET(2) NUMBITS(2) [
-            Byte = 0,
-            HalfWord = 1,
-            Word = 2
+        /// Transfer Type
+        /// 0 = Burst mode
+        /// 1 = Single mode
+        TXTYPE OFFSET(2) NUMBITS(1) [
+            Burst = 0,
+            Single = 1
         ],
 
         /// Operation Mode
@@ -176,10 +170,12 @@ register_bitfields![u32,
 
     /// Interrupt Status Register
     INTSTS [
-        /// Transfer Done Interrupt Flag (channels 0-13)
-        TDIF OFFSET(16) NUMBITS(14) [],
-        /// Scatter-Gather Table Empty Interrupt Flag (channels 0-13)
-        SGTDIF OFFSET(0) NUMBITS(14) []
+        /// Table Empty Interrupt Status Flag
+        TEIF OFFSET(2) NUMBITS(1) [],
+        /// Transfer Done Interrupt Flag
+        TDIF OFFSET(1) NUMBITS(1) [],
+        /// Read/Write Target Abort Interrupt Status Flag
+        ABTIF OFFSET(0) NUMBITS(1) []
     ],
 
     /// Abort Status Register
@@ -337,9 +333,12 @@ impl PdmaScatterDescriptor {
             return Err(ErrorCode::INVAL);
         }
 
+        let ctl_value = build_descriptor_control(config);
         self.endsa.set(config.source_addr);
         self.endda.set(config.dest_addr);
-        self.ctl.set(build_descriptor_control(config));
+        self.ctl.set(ctl_value);
+        // Scatter-gather descriptors in RAM use full 32-bit NEXT address
+        // (masking to 16-bit only applies to hardware channel descriptor)
         self.next.set(config.next.unwrap_or(0));
 
         Ok(())
@@ -351,6 +350,25 @@ impl PdmaScatterDescriptor {
         self.endsa.set(0);
         self.endda.set(0);
         self.next.set(0);
+    }
+
+    /// Return the remaining transfer count reported by the descriptor.
+    ///
+    /// When a scatter-gather transfer is active, the hardware updates the
+    /// descriptor's TXCNT field with (remaining transfers - 1). Once the
+    /// descriptor completes, the operation mode moves to `Stop` and we treat
+    /// the remaining count as zero.
+    pub fn remaining_transfers(&self) -> u16 {
+        let ctl = self.ctl.get();
+
+        // When the descriptor is no longer active the hardware clears OPMODE
+        // back to `Stop`, which we interpret as no remaining transfers.
+        if ctl == 0 || (ctl & 0x3) == PdmaMode::Stop as u32 {
+            return 0;
+        }
+
+        let remaining_field = ((ctl >> 16) & 0x3FFF) as u16;
+        remaining_field.saturating_add(1)
     }
 }
 
@@ -467,6 +485,13 @@ impl Pdma {
         channel: PdmaChannel,
         config: &PdmaTransferConfig,
     ) -> Result<(), ErrorCode> {
+        pdma_debug!(
+            "PDMA start_transfer - channel {:?}, count {}, mode {:?}, periph {:?}",
+            channel,
+            config.transfer_count,
+            config.mode,
+            config.peripheral
+        );
         if self.is_channel_busy(channel) {
             return Err(ErrorCode::BUSY);
         }
@@ -508,7 +533,7 @@ impl Pdma {
     }
 
     /// Configure peripheral request source for a channel
-    fn configure_peripheral_request(&self, channel: PdmaChannel, peripheral: PdmaPeripheral) {
+    pub fn configure_peripheral_request(&self, channel: PdmaChannel, peripheral: PdmaPeripheral) {
         let regs = self.registers;
         let ch_num = channel.as_usize();
         let periph_val = peripheral as u32;
@@ -558,6 +583,89 @@ impl Pdma {
         regs.swreq.set(channel.bit_mask());
     }
 
+    /// Initialize top descriptor table for scatter-gather mode
+    ///
+    /// This configures the hardware descriptor table (DSCT register) to point to
+    /// a scatter-gather descriptor in RAM.
+    ///
+    /// # Arguments
+    /// * `channel` - DMA channel to configure
+    /// * `sg_desc_addr` - Physical address of the scatter-gather descriptor in RAM
+    pub fn init_scatter_gather_descriptor(&self, channel: PdmaChannel, sg_desc_addr: u32) {
+        let regs = self.registers;
+        let ch_idx = channel.as_usize();
+        let dsct = &regs.dsct[ch_idx];
+
+        // Initialize top descriptor table with scatter-gather mode
+        dsct.endsa.set(0x0);
+        dsct.endda.set(0x0);
+        dsct.next.set(sg_desc_addr & 0xFFFF); // Lower 16 bits
+
+        // Set mode to scatter-gather (OPMODE = 2)
+        dsct.ctl.set(2 << 0); // Only set OPMODE field, rest will be in SG descriptor
+    }
+
+    /// Clear transfer done status for a channel
+    pub fn clear_transfer_done(&self, channel: PdmaChannel) {
+        let ch_mask = channel.bit_mask();
+        if self.registers.tdsts.get() & ch_mask != 0 {
+            self.registers.tdsts.set(ch_mask); // Write 1 to clear
+        }
+    }
+
+    /// Enable interrupts for a channel (both transfer done and scatter-gather done)
+    pub fn enable_interrupts(&self, channel: PdmaChannel) {
+        let regs = self.registers;
+        let ch_mask = channel.bit_mask();
+        let mut inten_val = regs.inten.get();
+        // inten_val |= ch_mask << 16; // Enable TDIF (transfer done interrupt)
+        inten_val |= ch_mask; // Enable SGTDIF (scatter-gather done interrupt)
+        regs.inten.set(inten_val);
+
+        // kernel::debug!(
+        //     "PDMA enable_interrupts - channel {:?}, inten=0x{:x}",
+        //     channel,
+        //     regs.inten.get()
+        // );
+    }
+
+    /// Read and display the current hardware descriptor table values for debugging
+    pub fn debug_descriptor(&self, channel: PdmaChannel) {
+        let regs = self.registers;
+        let ch_idx = channel.as_usize();
+        let dsct = &regs.dsct[ch_idx];
+
+        let ctl = dsct.ctl.get();
+        let sa = dsct.endsa.get();
+        let da = dsct.endda.get();
+        let next = dsct.next.get();
+
+        pdma_debug!(
+            "PDMA HW descriptor[{:?}]: CTL=0x{:08x}, SA=0x{:08x}, DA=0x{:08x}, NEXT=0x{:08x}",
+            channel,
+            ctl,
+            sa,
+            da,
+            next
+        );
+        pdma_debug!(
+            "  SCATBA=0x{:08x}, CHCTL=0x{:08x}, TDSTS=0x{:08x}, TACTSTS=0x{:08x}",
+            regs.scatba.get(),
+            regs.chctl.get(),
+            regs.tdsts.get(),
+            regs.tactsts.get()
+        );
+    }
+
+    /// Return the remaining number of transfers for a channel.
+    ///
+    /// The hardware decrements the TXCNT field as a transfer progresses.
+    /// Reading the descriptor control register provides the current value.
+    pub fn remaining_transfers(&self, channel: PdmaChannel) -> u16 {
+        let dsct = &self.registers.dsct[channel.as_usize()];
+        (((dsct.ctl.get() >> 16) & 0x3FFF) + 1) as u16
+    }
+
     /// Handle interrupt for PDMA controller
     /// Should be called from the PDMA ISR
     pub fn handle_interrupt(&self) {
@@ -565,43 +673,38 @@ impl Pdma {
 
         // Clear interrupt summary bits (both SG and TD)
         let intsts = regs.intsts.get();
+        let tdsts = regs.tdsts.get();
+        let scatsts = regs.scatsts.get();
+        let abtsts = regs.abtsts.get();
+
+        // gpio::set_debug_gpio86(true);
+
+        // pdma_debug!(
+        //     "PDMA handle_interrupt - intsts=0x{:x}, tdsts=0x{:x}, scatsts=0x{:x}, abtsts=0x{:x}",
+        //     intsts,
+        //     tdsts,
+        //     scatsts,
+        //     abtsts
+        // );
+
         if intsts != 0 {
             regs.intsts.set(intsts);
         }
 
-        let tdsts = regs.tdsts.get();
         if tdsts != 0 {
             regs.tdsts.set(tdsts);
         }
 
-        let scatsts = regs.scatsts.get();
         if scatsts != 0 {
             regs.scatsts.set(scatsts);
         }
 
         let completion_mask = tdsts | scatsts;
         if completion_mask != 0 {
-            for ch in 0..14 {
+            for ch in 0..14u8 {
                 if (completion_mask & (1 << ch)) != 0 {
-                    if let Some(client) = self.clients[ch].get() {
-                        let channel = match ch {
-                            0 => PdmaChannel::Channel0,
-                            1 => PdmaChannel::Channel1,
-                            2 => PdmaChannel::Channel2,
-                            3 => PdmaChannel::Channel3,
-                            4 => PdmaChannel::Channel4,
-                            5 => PdmaChannel::Channel5,
-                            6 => PdmaChannel::Channel6,
-                            7 => PdmaChannel::Channel7,
-                            8 => PdmaChannel::Channel8,
-                            9 => PdmaChannel::Channel9,
-                            10 => PdmaChannel::Channel10,
-                            11 => PdmaChannel::Channel11,
-                            12 => PdmaChannel::Channel12,
-                            13 => PdmaChannel::Channel13,
-                            _ => continue,
-                        };
-                        client.transfer_done(channel);
+                    if let Some(client) = self.clients[ch as usize].get() {
+                        client.transfer_done(unsafe { core::mem::transmute(ch) });
                     }
                 }
             }
@@ -609,35 +712,20 @@ impl Pdma {
 
         let abtsts = regs.abtsts.get();
         if abtsts != 0 {
-            // Clear the flags
             regs.abtsts.set(abtsts);
-
-            // Notify clients of errors
-            for ch in 0..14 {
+            for ch in 0..14u8 {
                 if (abtsts & (1 << ch)) != 0 {
-                    if let Some(client) = self.clients[ch].get() {
-                        let channel = match ch {
-                            0 => PdmaChannel::Channel0,
-                            1 => PdmaChannel::Channel1,
-                            2 => PdmaChannel::Channel2,
-                            3 => PdmaChannel::Channel3,
-                            4 => PdmaChannel::Channel4,
-                            5 => PdmaChannel::Channel5,
-                            6 => PdmaChannel::Channel6,
-                            7 => PdmaChannel::Channel7,
-                            8 => PdmaChannel::Channel8,
-                            9 => PdmaChannel::Channel9,
-                            10 => PdmaChannel::Channel10,
-                            11 => PdmaChannel::Channel11,
-                            12 => PdmaChannel::Channel12,
-                            13 => PdmaChannel::Channel13,
-                            _ => continue,
-                        };
-                        client.transfer_error(channel, PdmaError::TargetAbort);
+                    if let Some(client) = self.clients[ch as usize].get() {
+                        client.transfer_error(
+                            unsafe { core::mem::transmute(ch) },
+                            PdmaError::TargetAbort,
+                        );
                     }
                 }
             }
         }
+
+        // gpio::set_debug_gpio86(false);
     }
 
     /// Get scatter-gather base address
@@ -651,28 +739,49 @@ impl Pdma {
     }
 }
 
+/// Singleton PDMA controller instance used across the chip crate.
+pub static PDMA: Pdma = Pdma::new();
+
+unsafe impl Sync for Pdma {}
+
 fn build_descriptor_control(config: &PdmaTransferConfig) -> u32 {
-    let mut ctl_val = 0u32;
+    use kernel::utilities::registers::LocalRegisterCopy;
 
-    // Transfer count (14 bits)
-    ctl_val |= ((config.transfer_count as u32) & 0x3FFF) << 16;
+    let mut ctl = LocalRegisterCopy::<u32, DSCT_CTL::Register>::new(0);
 
-    // Transfer direction selection
-    ctl_val |= (config.direction as u32) << 13;
+    // Transfer count (14 bits) - hardware uses (count-1)
+    ctl.write(DSCT_CTL::TXCNT.val(config.transfer_count as u32));
 
-    // Burst size selection
-    ctl_val |= (config.burst_size as u32) << 10;
+    // Transfer width - use source width (byte/halfword/word)
+    // PdmaWidth: Byte=0, HalfWord=1, Word=2 matches TXWIDTH encoding
+    ctl.modify(DSCT_CTL::TXWIDTH.val(config.src_width as u32));
 
-    // Destination and source address direction controls
-    ctl_val |= (config.dst_addr_mode as u32) << 8;
-    ctl_val |= (config.src_addr_mode as u32) << 6;
+    // Destination address increment control
+    // PdmaAddrMode: Increment=0, Decrement=1, Fixed=2
+    // DAINC: Increment=0, Decrement=1, Fixed=3
+    let dainc = match config.dst_addr_mode {
+        PdmaAddrMode::Increment => 0,
+        PdmaAddrMode::Decrement => 1,
+        PdmaAddrMode::Fixed => 3,
+    };
+    ctl.modify(DSCT_CTL::DAINC.val(dainc));
 
-    // Destination and source increment size controls
-    ctl_val |= (config.dst_width as u32) << 4;
-    ctl_val |= (config.src_width as u32) << 2;
+    // Source address increment control
+    let sainc = match config.src_addr_mode {
+        PdmaAddrMode::Increment => 0,
+        PdmaAddrMode::Decrement => 1,
+        PdmaAddrMode::Fixed => 3,
+    };
+    ctl.modify(DSCT_CTL::SAINC.val(sainc));
 
-    // Operation mode
-    ctl_val |= config.mode as u32;
+    // Burst size (3 bits)
+    ctl.modify(DSCT_CTL::BURSIZE.val(config.burst_size as u32));
 
-    ctl_val
+    // Transfer type - set to Single for single-request peripherals
+    ctl.modify(DSCT_CTL::TXTYPE::Single);
+
+    // Operation mode (Basic or ScatterGather)
+    ctl.modify(DSCT_CTL::OPMODE.val(config.mode as u32));
+
+    ctl.get()
 }
