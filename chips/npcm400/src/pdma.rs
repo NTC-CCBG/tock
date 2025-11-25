@@ -621,12 +621,6 @@ impl Pdma {
         // inten_val |= ch_mask << 16; // Enable TDIF (transfer done interrupt)
         inten_val |= ch_mask; // Enable SGTDIF (scatter-gather done interrupt)
         regs.inten.set(inten_val);
-
-        // kernel::debug!(
-        //     "PDMA enable_interrupts - channel {:?}, inten=0x{:x}",
-        //     channel,
-        //     regs.inten.get()
-        // );
     }
 
     /// Read and display the current hardware descriptor table values for debugging

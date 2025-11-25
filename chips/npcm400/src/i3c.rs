@@ -117,6 +117,17 @@ macro_rules! i3c_debug {
     ($($arg:tt)*) => {{}};
 }
 
+// Conditional debug macro for I3C verbose logging
+#[cfg(feature = "debug-i3c-verbose")]
+macro_rules! i3c_verbose {
+    ($($arg:tt)*) => (kernel::debug!($($arg)*));
+}
+
+#[cfg(not(feature = "debug-i3c-verbose"))]
+macro_rules! i3c_verbose {
+    ($($arg:tt)*) => {{}};
+}
+
 /// I3C Provisioned ID (PID) - 48-bit unique device identifier
 #[derive(Copy, Clone, Debug)]
 pub struct ProvisionedId {
@@ -840,43 +851,42 @@ impl<'a> I3cTarget<'a> {
 
     /// Enable DMA writes from memory to the TX FIFO
     pub fn enable_tx_dma(&self) {
-        // i3c_debug!("[I3C] DMATB set");
+        i3c_verbose!("[S]");
+
         self.registers.dmactrl.modify(DMACTRL::DMATB::Enabled);
     }
 
     /// Disable DMA writes to TX FIFO so software can refill FIFO directly
     pub fn disable_tx_dma(&self) {
-        // i3c_debug!("[I3C] DMATB cleared");
+        i3c_verbose!("[P]");
+
         self.registers.dmactrl.modify(DMACTRL::DMATB::Disabled);
     }
 
     /// Start a PDMA RX transfer unconditionally
-    fn start_rx_dma_transfer(&self) {
+    fn start_rx_dma_transfer(&self) -> bool {
         // Configure RX DMA with the provided buffer
-        let dma_ok = self
-            .rx_buffer
-            .map_or(false, |buffer| self.configure_rx_dma(buffer).is_ok());
-
-        // CRITICAL: Only enable I3C DMA if PDMA was successfully configured
-        // Enabling without configured PDMA causes I3C controller to hang waiting for handshake
-        if dma_ok {
-            self.enable_rx_dma();
-        }
+        self.rx_buffer.map_or(false, |buffer| {
+            if self.configure_rx_dma(buffer).is_ok() {
+                self.enable_rx_dma();
+                true
+            } else {
+                false
+            }
+        })
     }
 
     /// Start a PDMA RX transfer when DMA mode is active and resources are ready.
-    fn start_rx_dma_if_needed(&self) {
+    fn start_rx_dma_if_needed(&self) -> bool {
         if self.transfer_mode.get() != TransferMode::Dma {
-            return;
-        }
-        if self.state.get() != OperState::Write {
-            return;
-        }
-        if self.rx_dma_active.get() {
-            return;
+            return false;
         }
 
-        self.start_rx_dma_transfer();
+        if self.rx_dma_active.get() {
+            return false;
+        }
+
+        self.start_rx_dma_transfer()
     }
 
     /// Configure and launch a PDMA transfer from the RX FIFO into the provided buffer.
@@ -991,49 +1001,41 @@ impl<'a> I3cTarget<'a> {
     }
 
     /// Start a PDMA TX transfer if resources are ready.
-    fn start_tx_dma_if_needed(&self) {
+    fn start_tx_dma_if_needed(&self) -> bool {
         if self.transfer_mode.get() != TransferMode::Dma {
-            i3c_debug!("[TX DMA] !DMA");
-            return;
-        }
-
-        if self.state.get() != OperState::Read {
-            i3c_debug!("[TX DMA] !Read");
-            return;
+            i3c_verbose!("[TX DMA] !DMA");
+            return false;
         }
 
         if self.tx_dma_active.get() {
-            i3c_debug!("[TX DMA] active");
-            return;
+            i3c_verbose!("[TX DMA] active");
+            return false;
         }
 
         if self.tx_buffer.is_none() {
-            i3c_debug!("[TX DMA] !buf");
-            return;
+            i3c_verbose!("[TX DMA] !buf");
+            return false;
         }
 
-        self.start_tx_dma_transfer();
+        self.start_tx_dma_transfer()
     }
 
     /// Start a PDMA TX transfer unconditionally.
-    fn start_tx_dma_transfer(&self) {
-        self.tx_buffer.map(|buffer| {
+    /// Returns true if the transfer was successfully configured and started, false otherwise.
+    fn start_tx_dma_transfer(&self) -> bool {
+        self.tx_buffer.map_or(false, |buffer| {
             let len = self.tx_len.get().min(buffer.len());
             if len == 0 {
-                return;
+                return false;
             }
 
-            match self.configure_tx_dma(&buffer[..len]) {
-                Ok(()) => {}
-                Err(err) => {
-                    i3c_debug!("[TX DMA] cfg: ERR");
-                    let _ = err;
-                }
+            if self.configure_tx_dma(&buffer[..len]).is_ok() {
+                self.enable_tx_dma();
+                true
+            } else {
+                false
             }
-
-            // Enable I3C DMA
-            self.enable_tx_dma();
-        });
+        })
     }
 
     /// Configure TX scatter-gather descriptor and kick off DMA towards the TX FIFO.
@@ -1041,6 +1043,8 @@ impl<'a> I3cTarget<'a> {
         if buffer.is_empty() {
             return Err(ErrorCode::SIZE);
         }
+
+        i3c_verbose!("=c");
 
         // Stop any previous TX DMA
         self.disable_tx_dma();
@@ -1126,6 +1130,7 @@ impl<'a> I3cTarget<'a> {
         }
 
         self.pdma.enable_interrupts(self.dma_tx_channel);
+
         self.tx_dma_active.set(true);
         self.tx_idx.set(0);
 
@@ -1137,6 +1142,7 @@ impl<'a> I3cTarget<'a> {
     /// Stop an in-flight TX DMA transfer and report bytes pushed into the FIFO.
     fn finalize_tx_dma(&self) -> usize {
         if self.transfer_mode.get() != TransferMode::Dma || !self.tx_dma_active.get() {
+            i3c_verbose!("[TX DMA] not active");
             return self.tx_idx.get();
         }
 
@@ -1149,6 +1155,8 @@ impl<'a> I3cTarget<'a> {
         self.tx_dma_expected.set(0);
 
         self.tx_idx.set(actual);
+
+        i3c_verbose!("=e");
 
         self.disable_tx_dma();
 
@@ -1347,10 +1355,6 @@ impl<'a> I3cTarget<'a> {
         gpio::enable_debug_gpio86_87_95_94();
     }
 
-    pub fn get_intmasked(&self) -> u32 {
-        self.registers.intmasked.get()
-    }
-
     /// Handle I3C interrupt
     /// This function reads the interrupt status, identifies the source of the interrupt,
     /// and calls the appropriate handler for each interrupt type.
@@ -1360,14 +1364,14 @@ impl<'a> I3cTarget<'a> {
     /// processing.
     pub fn handle_interrupt(&self) {
         let regs = self.registers;
-        let mut int_masked = self.get_intmasked();
+        let mut int_masked = self.registers.intmasked.get();
 
         // Return early if no interrupts (spurious interrupt)
         if int_masked == 0 {
             // Re-read INTMASKED in case of race condition
-            int_masked = self.get_intmasked();
+            int_masked = self.registers.intmasked.get();
             if int_masked == 0 {
-                kernel::debug!("[I3C Target driver] Spurious Interrupt");
+                i3c_verbose!("[I3C Target driver] Spurious Interrupt");
                 return;
             }
         }
@@ -1377,11 +1381,6 @@ impl<'a> I3cTarget<'a> {
         // Loop until all interrupts are processed
         // This ensures new interrupts that arrive during processing are also handled
         while int_masked != 0 {
-            // Handle errors first
-            if (int_masked & INTMASKED::ERRWARN::SET.value) != 0 {
-                self.handle_error();
-            }
-
             // Handle START condition (includes repeated start)
             if (int_masked & INTMASKED::START::SET.value) != 0 {
                 self.handle_start();
@@ -1392,6 +1391,8 @@ impl<'a> I3cTarget<'a> {
 
             // Handle SLVSTART (target reset detection)
             if (int_masked & INTMASKED::SLVSTART::SET.value) != 0 {
+                i3c_debug!("[I3C Target driver] SLVSTART detected");
+
                 self.handle_slvstart();
 
                 // Clear SLVSTART interrupt (W1C)
@@ -1402,15 +1403,12 @@ impl<'a> I3cTarget<'a> {
             // IMPORTANT: Process MATCHED BEFORE RXPEND so state is set correctly (Write vs Read)
             // before we try to read data from FIFO
             if (int_masked & INTMASKED::MATCHED::SET.value) != 0 {
-                // kernel::debug!("[I3C Target driver] Address MATCHED");
-
                 self.handle_matched();
 
                 // If CONFIG.MATCHSS=1, MATCHED bit must remain 1 to detect next start or stop.
                 // Clear the status bit in STOP or START handler.
                 let config = regs.config.get();
                 if (config & CONFIG::MATCHSS::SET.value) != 0 {
-                    kernel::debug!("[I3C Target driver] MATCHSS=1, leaving MATCHED set");
                     regs.intclr.modify(INTCLR::MATCHED::SET);
                 } else {
                     // W1C
@@ -1422,7 +1420,7 @@ impl<'a> I3cTarget<'a> {
             // IMPORTANT: Process RXPEND AFTER MATCHED (so state is set) but BEFORE STOP
             // (to read all data before completing transfer)
             if (int_masked & INTMASKED::RXPEND::SET.value) != 0 {
-                kernel::debug!("[I3C Target driver] RXPEND interrupt");
+                i3c_verbose!("[I3C Target driver] RXPEND interrupt");
 
                 self.handle_rxpend();
                 // RXPEND auto-clears when FIFO is empty
@@ -1431,7 +1429,7 @@ impl<'a> I3cTarget<'a> {
             // Handle STOP condition
             // Process AFTER RXPEND to ensure all data is read before completing transfer
             if (int_masked & INTMASKED::STOP::SET.value) != 0 {
-                // kernel::debug!("[I3C Target driver] STOP condition");
+                // i3c_verbose!("[I3C Target driver] STOP condition");
 
                 self.handle_stop();
 
@@ -1441,7 +1439,7 @@ impl<'a> I3cTarget<'a> {
 
             // Handle dynamic address change
             if (int_masked & INTMASKED::DACHG::SET.value) != 0 {
-                kernel::debug!("[I3C Target driver] Dynamic Address Change");
+                i3c_verbose!("[I3C Target driver] Dynamic Address Change");
 
                 self.handle_dachg();
 
@@ -1451,7 +1449,7 @@ impl<'a> I3cTarget<'a> {
 
             // Handle TX not full (read from controller)
             if (int_masked & INTMASKED::TXNOTFULL::SET.value) != 0 {
-                kernel::debug!("[I3C Target driver] TX not full");
+                i3c_debug!("[I3C Target driver] TX not full");
 
                 // Clear TXNOTFULL interrupt (W1C)
                 regs.status.set(STATUS::TXNOTFULL::SET.value);
@@ -1459,7 +1457,7 @@ impl<'a> I3cTarget<'a> {
 
             // Handle CCC (Common Command Code)
             if (int_masked & INTMASKED::CCC::SET.value) != 0 {
-                kernel::debug!("[I3C Target driver] CCC received");
+                i3c_debug!("[I3C Target driver] CCC received");
 
                 // Clear CCC interrupt (W1C)
                 regs.status.set(STATUS::CCC::SET.value);
@@ -1467,7 +1465,7 @@ impl<'a> I3cTarget<'a> {
 
             // Handle DDRMATCH
             if (int_masked & INTMASKED::DDRMATCH::SET.value) != 0 {
-                kernel::debug!("[I3C Target driver] DDRMATCH event");
+                i3c_debug!("[I3C Target driver] DDRMATCH event");
 
                 // Clear DDRMATCH interrupt (W1C)
                 regs.status.set(STATUS::DDRMATCH::SET.value);
@@ -1475,7 +1473,7 @@ impl<'a> I3cTarget<'a> {
 
             // Handle CHANDLED
             if (int_masked & INTMASKED::CHANDLED::SET.value) != 0 {
-                kernel::debug!("[I3C Target driver] CHANDLED event");
+                i3c_debug!("[I3C Target driver] CHANDLED event");
 
                 // Flush FIFOs, the cmd code will remain in the buffer
                 self.flush_rx_fifo(true);
@@ -1485,16 +1483,10 @@ impl<'a> I3cTarget<'a> {
                 regs.status.set(STATUS::CHANDLED::SET.value);
             }
 
-            // Moved to STOP handler
-            // Handle EVENT (IBI, hot-join, controller role request)
-            // if (int_masked & INTMASKED::EVENT::SET.value) != 0 {
-            //     // kernel::debug!("[I3C Target driver] EVENT occurred");
-
-            //     self.handle_event();
-
-            //     // Clear EVENT interrupt (W1C)
-            //     regs.status.set(STATUS::EVENT::SET.value);
-            // }
+            // Handle errors
+            if (int_masked & INTMASKED::ERRWARN::SET.value) != 0 {
+                self.handle_error();
+            }
 
             // Re-check interrupts to handle any new interrupts that arrived during processing
             int_masked = regs.intmasked.get();
@@ -1597,6 +1589,9 @@ impl<'a> I3cTarget<'a> {
                     self.rx_len.set(0);
                 }
                 OperState::Read => {
+                    i3c_verbose!("-SL");
+                    i3c_debug!("[I3C Target driver] Abort read due to SLVSTART");
+
                     // Abort read transfer
                     let _ = self.finalize_tx_dma();
                     self.tx_buffer.take();
@@ -1604,7 +1599,7 @@ impl<'a> I3cTarget<'a> {
                     self.tx_idx.set(0);
                 }
                 OperState::Ibi => {
-                    kernel::debug!("[I3C Target driver] Abort IBI due to SLVSTART");
+                    i3c_debug!("[I3C Target driver] Abort IBI due to SLVSTART");
 
                     // Abort IBI
                     self.client.map(|client| {
@@ -1636,8 +1631,6 @@ impl<'a> I3cTarget<'a> {
         // Complete the previous transfer before starting new one
         match state {
             OperState::Write => {
-                i3c_debug!("[I3C Target driver] Repeated START during Write");
-
                 // Repeated start during write - complete the write transfer
                 self.finalize_rx_dma();
                 let len = self.rx_len.get();
@@ -1650,7 +1643,7 @@ impl<'a> I3cTarget<'a> {
                 self.state.set(OperState::Idle);
             }
             OperState::Read => {
-                i3c_debug!("[I3C Target driver] Repeated START during Read");
+                i3c_verbose!("-S");
 
                 // Repeated start during read - complete the read transfer
                 let _ = self.finalize_tx_dma();
@@ -1667,8 +1660,6 @@ impl<'a> I3cTarget<'a> {
                 self.state.set(OperState::Idle);
             }
             _ => {
-                i3c_debug!("[I3C Target driver] Normal START");
-
                 // Normal START - just reset counters
                 self.rx_len.set(0);
                 self.tx_idx.set(0);
@@ -1690,19 +1681,22 @@ impl<'a> I3cTarget<'a> {
 
         gpio::set_debug_gpio95(true);
 
-        let mut status = regs.status.get();
+        // Timing delay to allow hardware to settle before reading STATUS register
+        // At 96 MHz CPU clock: ~4 cycles per iteration (including loop overhead)
+        // FIFO mode: ~1µs delay for byte transfer time at 12.5MHz I3C clock
+        // DMA mode: ~0.25µs delay (DMA handshaking is faster)
+        const CPU_MHZ: u32 = 96;
+        let delay_cycles = if self.transfer_mode.get() == TransferMode::Fifo {
+            CPU_MHZ // ~1µs at 96MHz (96 cycles ÷ 4 cycles/iter = 24 iterations)
+        } else {
+            CPU_MHZ / 4 // ~0.25µs for DMA mode
+        };
 
-        // In Fifo mode, for pp=12.5MHz, wait one byte transfer time (1us) before checking for
-        // request type
-        // TODO: Replace with timer-based delay if more accurate timing is needed
-        // Simple delay loop
-        if self.transfer_mode.get() == TransferMode::Fifo {
-            for _ in 0..32 {
-                core::hint::spin_loop();
-            }
-
-            status = regs.status.get();
+        for _ in 0..(delay_cycles / 4) {
+            core::hint::spin_loop();
         }
+
+        let status = regs.status.get();
 
         // Check if it's a read or write by examining the captured status bits
         if (status & STATUS::RXPEND::SET.value) != 0 || (status & STATUS::STREQWR::SET.value) != 0 {
@@ -1712,7 +1706,7 @@ impl<'a> I3cTarget<'a> {
             // cancel it and return the buffer to the client since the master
             // is sending a write instead of reading our response
             if self.tx_buffer.is_some() {
-                kernel::debug!("[I3C Target driver] MATCHED: Cancelling pending TX");
+                i3c_debug!("[I3C Target driver] MATCHED: Cancelling pending TX");
                 let _ = self.finalize_tx_dma();
                 if let Some(buffer) = self.tx_buffer.take() {
                     if self.hil_tx_client.is_some() {
@@ -1749,13 +1743,11 @@ impl<'a> I3cTarget<'a> {
             // Read request from controller - target must send data
             // If transmit() sent IBI, it already set state to Read and prefilled FIFO
             // Otherwise, just transition to Read state
-            if self.state.get() != OperState::Read {
-                self.state.set(OperState::Read);
-            }
+            self.state.set(OperState::Read);
 
             // If no buffer is available, request data from client
             if self.tx_buffer.is_none() {
-                // kernel::debug!("[I3C Target driver] MATCHED: No TX buffer available");
+                // i3c_verbose!("[I3C Target driver] MATCHED: No TX buffer available");
                 // self.client.map(|client| client.read_requested());
 
                 // No need to check if we use TX DMA, the buffer is already provided in transmit()
@@ -1790,6 +1782,8 @@ impl<'a> I3cTarget<'a> {
                     }
                 });
             }
+
+            // For DMA mode, TX DMA already enabled in EVENT handler if needed
         }
 
         gpio::set_debug_gpio95(false);
@@ -1813,12 +1807,13 @@ impl<'a> I3cTarget<'a> {
                 // Event acknowledged
                 // Check if this was an IBI for pending read data (from transmit())
                 if self.ibi_pending.get() {
-                    kernel::debug!("E");
+                    i3c_verbose!("E");
+
                     // Clear the pending flag
                     self.ibi_pending.set(false);
 
                     // Transition to Read state
-                    self.state.set(OperState::Read);
+                    // self.state.set(OperState::Read);
 
                     // CRITICAL: Pre-fill TX FIFO to prevent URUNNACK error
                     // The controller may respond to the IBI very quickly with a read request.
@@ -1844,7 +1839,7 @@ impl<'a> I3cTarget<'a> {
                             self.tx_idx.set(idx);
                         });
                     } else if self.transfer_mode.get() == TransferMode::Dma {
-                        // self.flush_tx_fifo(true);
+                        // TX DMA already started in transmit(), just ensure it's active
                         self.start_tx_dma_if_needed();
                     }
                 } else {
@@ -1853,8 +1848,6 @@ impl<'a> I3cTarget<'a> {
                     //     client.hotjoin_complete(Ok(()));
                     // });
                     // self.state.set(OperState::Idle);
-
-                    kernel::debug!("[I3C Target driver] EVENT: Hot-join acknowledged");
 
                     i3c_debug!("[I3C Target driver] Hot-join event acknowledged");
                 }
@@ -1879,11 +1872,11 @@ impl<'a> I3cTarget<'a> {
                     });
                     self.state.set(OperState::Idle);
 
-                    kernel::debug!("[I3C Target driver] Hot-join Set idle");
+                    i3c_debug!("[I3C Target driver] Hot-join Set idle");
                 }
             }
             _ => {
-                kernel::debug!("[I3C Target driver] EVENT: No event or not yet sent");
+                i3c_debug!("[I3C Target driver] EVENT: No event or not yet sent");
 
                 // No event or not yet sent - do nothing
             }
@@ -1904,9 +1897,7 @@ impl<'a> I3cTarget<'a> {
         }
 
         if self.transfer_mode.get() == TransferMode::Dma {
-            self.start_tx_dma_if_needed();
-
-            if self.tx_dma_active.get() {
+            if self.start_tx_dma_if_needed() {
                 return;
             }
         }
@@ -1940,22 +1931,32 @@ impl<'a> I3cTarget<'a> {
     fn handle_stop(&self) {
         let regs = self.registers;
         let current_state = self.state.get();
+        let int_masked = regs.intmasked.get();
+
+        gpio::set_debug_gpio86(true);
 
         // Check for concurrent START interrupt
         // If START is also pending, clear it to avoid processing it separately
         // This can happen in certain timing conditions on the bus
-        let int_masked = regs.intmasked.get();
         if (int_masked & INTMASKED::START::SET.value) != 0 {
             // Clear the START status bit (W1C)
             regs.status.set(STATUS::START::SET.value);
         }
 
-        gpio::set_debug_gpio86(true);
+        // Check for EVENT interrupt (IBI, hot-join, controller role request) FIRST
+        // This speeds up TX FIFO preparation for IBI-triggered reads
+        if (int_masked & INTMASKED::EVENT::SET.value) != 0 {
+            i3c_verbose!("EV");
+            self.handle_event();
+
+            // Clear EVENT interrupt (W1C)
+            regs.status.set(STATUS::EVENT::SET.value);
+        }
 
         // Process the transfer completion based on previous state
         match current_state {
             OperState::Write => {
-                kernel::debug!("W");
+                i3c_verbose!("W");
 
                 // Write complete - finalize DMA and get actual received length
                 let actual_len = self.finalize_rx_dma();
@@ -1963,7 +1964,10 @@ impl<'a> I3cTarget<'a> {
                 // Return to idle state BEFORE calling client callbacks
                 // This allows clients (e.g., MCTP) to immediately queue TX data in response
                 // The client may call transmit() which will transition to Read state
-                self.state.set(OperState::Idle);
+                // Only set to Idle if handle_event() didn't already change the state
+                if self.state.get() == current_state {
+                    self.state.set(OperState::Idle);
+                }
 
                 if let Some(buffer) = self.rx_buffer.take() {
                     // Prioritize HIL RX client (for MCTP) over native client
@@ -1977,20 +1981,23 @@ impl<'a> I3cTarget<'a> {
                             client.write_complete(buffer, actual_len, Ok(()));
                         });
                     }
+                } else {
+                    i3c_debug!("[I3C] Write STOP: NO RX buffer!");
                 }
-                self.flush_rx_fifo(true);
-                self.rx_len.set(0);
 
                 // NOTE: DMA will be re-enabled when the client provides a new buffer via set_rx_buffer()
                 // This ensures we're ready for the next transfer
             }
             OperState::Read => {
-                kernel::debug!("R");
+                i3c_verbose!("R");
 
                 // gpio::set_debug_gpio95(true);
 
                 // Return to idle state
-                self.state.set(OperState::Idle);
+                // Only set to Idle if handle_event() didn't already change the state
+                if self.state.get() == current_state {
+                    self.state.set(OperState::Idle);
+                }
 
                 // Read complete - return TX buffer to client
                 let _ = self.finalize_tx_dma();
@@ -2005,57 +2012,42 @@ impl<'a> I3cTarget<'a> {
                 self.tx_len.set(0);
                 self.tx_idx.set(0);
 
-                // Reset RX DMA?
-                self.flush_rx_fifo(true);
-                self.rx_len.set(0);
-
                 // gpio::set_debug_gpio95(false);
             }
             OperState::Ibi => {
-                kernel::debug!("B");
+                i3c_verbose!("B");
 
                 // handle_event() will check EVDET status and:
                 // - If ibi_pending: transition to Read, prefill TX FIFO
                 // - If hot-join: call client callback, transition to Idle
 
                 // Return to idle state
-                self.state.set(OperState::Idle);
+                // Only set to Idle if handle_event() didn't already change the state
+                if self.state.get() == current_state {
+                    self.state.set(OperState::Idle);
+                }
             }
             OperState::Idle => {
-                kernel::debug!("I");
+                i3c_verbose!("I");
 
                 // Already idle, just cleanup
                 self.flush_tx_fifo(true);
                 self.flush_rx_fifo(false);
-
-                // Clear RX buffer data since it's dummy data from an unexpected transfer
-                // The buffer should be clean for the next transfer
-                self.rx_buffer.map(|buffer| {
-                    for byte in buffer.iter_mut() {
-                        *byte = 0;
-                    }
-                });
-                self.rx_len.set(0);
-
-                // Re-configure RX DMA with the provided buffer
-                let dma_ok = self
-                    .rx_buffer
-                    .map_or(false, |buffer| self.configure_rx_dma(buffer).is_ok());
-
-                // Only enable I3C DMA if PDMA was successfully configured
-                if dma_ok {
-                    self.enable_rx_dma();
-                }
             }
         }
 
-        // Check for EVENT interrupt (IBI, hot-join, controller role request)
-        let int_masked = regs.intmasked.get();
-        if (int_masked & INTMASKED::EVENT::SET.value) != 0 {
-            self.handle_event();
+        // Clear RX buffer data since it's dummy data from an unexpected transfer
+        // The buffer should be clean for the next transfer
+        self.rx_buffer.map(|buffer| {
+            for byte in buffer.iter_mut() {
+                *byte = 0;
+            }
+        });
+        self.rx_len.set(0);
 
-            // Clear EVENT interrupt (W1C)
-            regs.status.set(STATUS::EVENT::SET.value);
+        // Start RX DMA for next transfer if in DMA mode
+        if self.transfer_mode.get() == TransferMode::Dma {
+            self.start_rx_dma_if_needed();
         }
 
         gpio::set_debug_gpio86(false);
@@ -2082,7 +2074,7 @@ impl<'a> I3cTarget<'a> {
         self.tx_len.set(len);
         self.tx_idx.set(0);
 
-        kernel::debug!("{}", len);
+        i3c_verbose!("R {}", actual_len);
 
         // TX DMA will be started when a read request is received in handle_matched()
     }
@@ -2114,12 +2106,17 @@ impl<'a> I3cTarget<'a> {
         if self.state.get() == OperState::Read {
             self.handle_tx();
         } else {
-            // kernel::debug!("[I3C Target driver] Send IBI for pending read data");
+            // i3c_verbose!("[I3C Target driver] Send IBI for pending read data");
 
             // Send IBI to notify controller that data is ready to be read
             let _ = self.send_ibi_with_len(MDB_PENDING_READ_MCTP, 0);
 
             // IBI send status EVDET will be handled in STOP handler
+
+            // Start TX DMA no matter the IBI was sent or not, this ensures data is ready for read
+            if self.start_tx_dma_transfer() == false {
+                i3c_debug!("[I3C Target driver] TX DMA could not be started");
+            }
         }
 
         gpio::set_debug_gpio94(false);
@@ -2208,7 +2205,7 @@ impl<'a> I3cTarget<'a> {
     pub fn send_ibi_with_payload(&self, mdb: u8, payload: Option<&[u8]>) -> Result<(), ErrorCode> {
         let regs = self.registers;
 
-        kernel::debug!(
+        i3c_verbose!(
             "[I3C Target driver] Sending IBI: MDB=0x{:X}, Payload={:?}",
             mdb,
             payload
@@ -2328,6 +2325,8 @@ impl<'a> I3cTarget<'a> {
     /// Flush TX FIFO buffer
     pub fn flush_tx_fifo(&self, _enable: bool) {
         if self.transfer_mode.get() == TransferMode::Dma {
+            i3c_verbose!("=f");
+
             self.disable_tx_dma();
         }
         self.registers.datactrl.modify(DATACTRL::FLUSHTB::SET);
@@ -2351,7 +2350,7 @@ impl<'a> hil::I3CTarget<'a> for I3cTarget<'a> {
         self.set_rx_buffer(rx_buf);
         self.start_rx_dma_transfer();
 
-        kernel::debug!("[I3C Target driver] HIL set_rx_buffer called");
+        i3c_verbose!("[I3C Target driver] HIL set_rx_buffer called");
     }
 
     fn transmit_read(
