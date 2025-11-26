@@ -2,652 +2,601 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 // Copyright Tock Contributors 2022.
 
+//! GPIO driver for NPCM400
+//!
+//! Based on NPCM400 GPIO IP specification (VER. 02H)
+//! NCT6694B GPIO ports implementation
+
+use core::cell::Cell;
 use enum_primitive::cast::FromPrimitive;
 use enum_primitive::enum_from_primitive;
 use kernel::hil;
 use kernel::utilities::cells::OptionalCell;
-use kernel::utilities::registers::{register_bitfields, ReadOnly, ReadWrite, WriteOnly};
+use kernel::utilities::registers::interfaces::{Readable, Writeable};
+use kernel::utilities::registers::{register_bitfields, register_structs, ReadOnly, ReadWrite};
 use kernel::utilities::StaticRef;
 
-// use crate::exti::{self, LineId};
-// use crate::rcc;
-
-/// General-purpose I/Os
+/// GPIO port registers structure
+/// Each GPIO port has 8 pins (some ports may have fewer)
 #[repr(C)]
 struct GpioRegisters {
-    /// GPIO port mode register
-    moder: ReadWrite<u32, MODER::Register>,
-    /// GPIO port output type register
-    otyper: ReadWrite<u32, OTYPER::Register>,
-    /// GPIO port output speed register
-    ospeedr: ReadWrite<u32, OSPEEDR::Register>,
-    /// GPIO port pull-up/pull-down register
-    pupdr: ReadWrite<u32, PUPDR::Register>,
-    /// GPIO port input data register
-    idr: ReadOnly<u32, IDR::Register>,
-    /// GPIO port output data register
-    odr: ReadWrite<u32, ODR::Register>,
-    /// GPIO port bit set/reset register
-    bsrr: WriteOnly<u32, BSRR::Register>,
-    /// GPIO port configuration lock register
-    lckr: ReadWrite<u32, LCKR::Register>,
-    /// GPIO alternate function low register
-    afrl: ReadWrite<u32, AFRL::Register>,
-    /// GPIO alternate function high register
-    afrh: ReadWrite<u32, AFRH::Register>,
+    /// Port GPIOx Data Out (offset 00h)
+    dout: ReadWrite<u8, DOUT::Register>,
+    /// Port GPIOx Data In (offset 01h)
+    din: ReadOnly<u8, DIN::Register>,
+    /// Port GPIOx Direction (offset 02h)
+    dir: ReadWrite<u8, DIR::Register>,
+    /// Port GPIOx Pull-Up or Pull-Down Enable (offset 03h)
+    pull: ReadWrite<u8, PULL::Register>,
+    /// Port GPIOx Pull-Up/Down Selection (offset 04h)
+    pud: ReadWrite<u8, PUD::Register>,
+    _reserved0: u8,
+    /// Port GPIOx Output Type (offset 06h)
+    otype: ReadWrite<u8, OTYPE::Register>,
+    _reserved1: [u8; 7],
+    /// Port GPIOx Version (offset 0Eh)
+    ver: ReadOnly<u8>,
 }
 
-register_bitfields![u32,
-    MODER [
-        /// Port x configuration bits (y = 0..15)
-        MODER15 OFFSET(30) NUMBITS(2) [],
-        /// Port x configuration bits (y = 0..15)
-        MODER14 OFFSET(28) NUMBITS(2) [],
-        /// Port x configuration bits (y = 0..15)
-        MODER13 OFFSET(26) NUMBITS(2) [],
-        /// Port x configuration bits (y = 0..15)
-        MODER12 OFFSET(24) NUMBITS(2) [],
-        /// Port x configuration bits (y = 0..15)
-        MODER11 OFFSET(22) NUMBITS(2) [],
-        /// Port x configuration bits (y = 0..15)
-        MODER10 OFFSET(20) NUMBITS(2) [],
-        /// Port x configuration bits (y = 0..15)
-        MODER9 OFFSET(18) NUMBITS(2) [],
-        /// Port x configuration bits (y = 0..15)
-        MODER8 OFFSET(16) NUMBITS(2) [],
-        /// Port x configuration bits (y = 0..15)
-        MODER7 OFFSET(14) NUMBITS(2) [],
-        /// Port x configuration bits (y = 0..15)
-        MODER6 OFFSET(12) NUMBITS(2) [],
-        /// Port x configuration bits (y = 0..15)
-        MODER5 OFFSET(10) NUMBITS(2) [],
-        /// Port x configuration bits (y = 0..15)
-        MODER4 OFFSET(8) NUMBITS(2) [],
-        /// Port x configuration bits (y = 0..15)
-        MODER3 OFFSET(6) NUMBITS(2) [],
-        /// Port x configuration bits (y = 0..15)
-        MODER2 OFFSET(4) NUMBITS(2) [],
-        /// Port x configuration bits (y = 0..15)
-        MODER1 OFFSET(2) NUMBITS(2) [],
-        /// Port x configuration bits (y = 0..15)
-        MODER0 OFFSET(0) NUMBITS(2) []
+register_bitfields![u8,
+    DOUT [
+        /// Pin 7 output value
+        PIN7 OFFSET(7) NUMBITS(1) [],
+        /// Pin 6 output value
+        PIN6 OFFSET(6) NUMBITS(1) [],
+        /// Pin 5 output value
+        PIN5 OFFSET(5) NUMBITS(1) [],
+        /// Pin 4 output value
+        PIN4 OFFSET(4) NUMBITS(1) [],
+        /// Pin 3 output value
+        PIN3 OFFSET(3) NUMBITS(1) [],
+        /// Pin 2 output value
+        PIN2 OFFSET(2) NUMBITS(1) [],
+        /// Pin 1 output value
+        PIN1 OFFSET(1) NUMBITS(1) [],
+        /// Pin 0 output value
+        PIN0 OFFSET(0) NUMBITS(1) []
     ],
-    OTYPER [
-        /// Port x configuration bits (y = 0..15)
-        OT15 OFFSET(15) NUMBITS(1) [],
-        /// Port x configuration bits (y = 0..15)
-        OT14 OFFSET(14) NUMBITS(1) [],
-        /// Port x configuration bits (y = 0..15)
-        OT13 OFFSET(13) NUMBITS(1) [],
-        /// Port x configuration bits (y = 0..15)
-        OT12 OFFSET(12) NUMBITS(1) [],
-        /// Port x configuration bits (y = 0..15)
-        OT11 OFFSET(11) NUMBITS(1) [],
-        /// Port x configuration bits (y = 0..15)
-        OT10 OFFSET(10) NUMBITS(1) [],
-        /// Port x configuration bits (y = 0..15)
-        OT9 OFFSET(9) NUMBITS(1) [],
-        /// Port x configuration bits (y = 0..15)
-        OT8 OFFSET(8) NUMBITS(1) [],
-        /// Port x configuration bits (y = 0..15)
-        OT7 OFFSET(7) NUMBITS(1) [],
-        /// Port x configuration bits (y = 0..15)
-        OT6 OFFSET(6) NUMBITS(1) [],
-        /// Port x configuration bits (y = 0..15)
-        OT5 OFFSET(5) NUMBITS(1) [],
-        /// Port x configuration bits (y = 0..15)
-        OT4 OFFSET(4) NUMBITS(1) [],
-        /// Port x configuration bits (y = 0..15)
-        OT3 OFFSET(3) NUMBITS(1) [],
-        /// Port x configuration bits (y = 0..15)
-        OT2 OFFSET(2) NUMBITS(1) [],
-        /// Port x configuration bits (y = 0..15)
-        OT1 OFFSET(1) NUMBITS(1) [],
-        /// Port x configuration bits (y = 0..15)
-        OT0 OFFSET(0) NUMBITS(1) []
+    DIN [
+        /// Pin 7 input value
+        PIN7 OFFSET(7) NUMBITS(1) [],
+        /// Pin 6 input value
+        PIN6 OFFSET(6) NUMBITS(1) [],
+        /// Pin 5 input value
+        PIN5 OFFSET(5) NUMBITS(1) [],
+        /// Pin 4 input value
+        PIN4 OFFSET(4) NUMBITS(1) [],
+        /// Pin 3 input value
+        PIN3 OFFSET(3) NUMBITS(1) [],
+        /// Pin 2 input value
+        PIN2 OFFSET(2) NUMBITS(1) [],
+        /// Pin 1 input value
+        PIN1 OFFSET(1) NUMBITS(1) [],
+        /// Pin 0 input value
+        PIN0 OFFSET(0) NUMBITS(1) []
     ],
-    OSPEEDR [
-        /// Port x configuration bits (y = 0..15)
-        OSPEEDR15 OFFSET(30) NUMBITS(2) [],
-        /// Port x configuration bits (y = 0..15)
-        OSPEEDR14 OFFSET(28) NUMBITS(2) [],
-        /// Port x configuration bits (y = 0..15)
-        OSPEEDR13 OFFSET(26) NUMBITS(2) [],
-        /// Port x configuration bits (y = 0..15)
-        OSPEEDR12 OFFSET(24) NUMBITS(2) [],
-        /// Port x configuration bits (y = 0..15)
-        OSPEEDR11 OFFSET(22) NUMBITS(2) [],
-        /// Port x configuration bits (y = 0..15)
-        OSPEEDR10 OFFSET(20) NUMBITS(2) [],
-        /// Port x configuration bits (y = 0..15)
-        OSPEEDR9 OFFSET(18) NUMBITS(2) [],
-        /// Port x configuration bits (y = 0..15)
-        OSPEEDR8 OFFSET(16) NUMBITS(2) [],
-        /// Port x configuration bits (y = 0..15)
-        OSPEEDR7 OFFSET(14) NUMBITS(2) [],
-        /// Port x configuration bits (y = 0..15)
-        OSPEEDR6 OFFSET(12) NUMBITS(2) [],
-        /// Port x configuration bits (y = 0..15)
-        OSPEEDR5 OFFSET(10) NUMBITS(2) [],
-        /// Port x configuration bits (y = 0..15)
-        OSPEEDR4 OFFSET(8) NUMBITS(2) [],
-        /// Port x configuration bits (y = 0..15)
-        OSPEEDR3 OFFSET(6) NUMBITS(2) [],
-        /// Port x configuration bits (y = 0..15)
-        OSPEEDR2 OFFSET(4) NUMBITS(2) [],
-        /// Port x configuration bits (y = 0..15)
-        OSPEEDR1 OFFSET(2) NUMBITS(2) [],
-        /// Port x configuration bits (y = 0..15)
-        OSPEEDR0 OFFSET(0) NUMBITS(2) []
+    DIR [
+        /// Pin 7 direction (0=input, 1=output)
+        PIN7 OFFSET(7) NUMBITS(1) [],
+        /// Pin 6 direction (0=input, 1=output)
+        PIN6 OFFSET(6) NUMBITS(1) [],
+        /// Pin 5 direction (0=input, 1=output)
+        PIN5 OFFSET(5) NUMBITS(1) [],
+        /// Pin 4 direction (0=input, 1=output)
+        PIN4 OFFSET(4) NUMBITS(1) [],
+        /// Pin 3 direction (0=input, 1=output)
+        PIN3 OFFSET(3) NUMBITS(1) [],
+        /// Pin 2 direction (0=input, 1=output)
+        PIN2 OFFSET(2) NUMBITS(1) [],
+        /// Pin 1 direction (0=input, 1=output)
+        PIN1 OFFSET(1) NUMBITS(1) [],
+        /// Pin 0 direction (0=input, 1=output)
+        PIN0 OFFSET(0) NUMBITS(1) []
     ],
-    PUPDR [
-        /// Port x configuration bits (y = 0..15)
-        PUPDR15 OFFSET(30) NUMBITS(2) [],
-        /// Port x configuration bits (y = 0..15)
-        PUPDR14 OFFSET(28) NUMBITS(2) [],
-        /// Port x configuration bits (y = 0..15)
-        PUPDR13 OFFSET(26) NUMBITS(2) [],
-        /// Port x configuration bits (y = 0..15)
-        PUPDR12 OFFSET(24) NUMBITS(2) [],
-        /// Port x configuration bits (y = 0..15)
-        PUPDR11 OFFSET(22) NUMBITS(2) [],
-        /// Port x configuration bits (y = 0..15)
-        PUPDR10 OFFSET(20) NUMBITS(2) [],
-        /// Port x configuration bits (y = 0..15)
-        PUPDR9 OFFSET(18) NUMBITS(2) [],
-        /// Port x configuration bits (y = 0..15)
-        PUPDR8 OFFSET(16) NUMBITS(2) [],
-        /// Port x configuration bits (y = 0..15)
-        PUPDR7 OFFSET(14) NUMBITS(2) [],
-        /// Port x configuration bits (y = 0..15)
-        PUPDR6 OFFSET(12) NUMBITS(2) [],
-        /// Port x configuration bits (y = 0..15)
-        PUPDR5 OFFSET(10) NUMBITS(2) [],
-        /// Port x configuration bits (y = 0..15)
-        PUPDR4 OFFSET(8) NUMBITS(2) [],
-        /// Port x configuration bits (y = 0..15)
-        PUPDR3 OFFSET(6) NUMBITS(2) [],
-        /// Port x configuration bits (y = 0..15)
-        PUPDR2 OFFSET(4) NUMBITS(2) [],
-        /// Port x configuration bits (y = 0..15)
-        PUPDR1 OFFSET(2) NUMBITS(2) [],
-        /// Port x configuration bits (y = 0..15)
-        PUPDR0 OFFSET(0) NUMBITS(2) []
+    PULL [
+        /// Pin 7 pull enable
+        PIN7 OFFSET(7) NUMBITS(1) [],
+        /// Pin 6 pull enable
+        PIN6 OFFSET(6) NUMBITS(1) [],
+        /// Pin 5 pull enable
+        PIN5 OFFSET(5) NUMBITS(1) [],
+        /// Pin 4 pull enable
+        PIN4 OFFSET(4) NUMBITS(1) [],
+        /// Pin 3 pull enable
+        PIN3 OFFSET(3) NUMBITS(1) [],
+        /// Pin 2 pull enable
+        PIN2 OFFSET(2) NUMBITS(1) [],
+        /// Pin 1 pull enable
+        PIN1 OFFSET(1) NUMBITS(1) [],
+        /// Pin 0 pull enable
+        PIN0 OFFSET(0) NUMBITS(1) []
     ],
-    IDR [
-        /// Port input data (y = 0..15)
-        IDR15 OFFSET(15) NUMBITS(1) [],
-        /// Port input data (y = 0..15)
-        IDR14 OFFSET(14) NUMBITS(1) [],
-        /// Port input data (y = 0..15)
-        IDR13 OFFSET(13) NUMBITS(1) [],
-        /// Port input data (y = 0..15)
-        IDR12 OFFSET(12) NUMBITS(1) [],
-        /// Port input data (y = 0..15)
-        IDR11 OFFSET(11) NUMBITS(1) [],
-        /// Port input data (y = 0..15)
-        IDR10 OFFSET(10) NUMBITS(1) [],
-        /// Port input data (y = 0..15)
-        IDR9 OFFSET(9) NUMBITS(1) [],
-        /// Port input data (y = 0..15)
-        IDR8 OFFSET(8) NUMBITS(1) [],
-        /// Port input data (y = 0..15)
-        IDR7 OFFSET(7) NUMBITS(1) [],
-        /// Port input data (y = 0..15)
-        IDR6 OFFSET(6) NUMBITS(1) [],
-        /// Port input data (y = 0..15)
-        IDR5 OFFSET(5) NUMBITS(1) [],
-        /// Port input data (y = 0..15)
-        IDR4 OFFSET(4) NUMBITS(1) [],
-        /// Port input data (y = 0..15)
-        IDR3 OFFSET(3) NUMBITS(1) [],
-        /// Port input data (y = 0..15)
-        IDR2 OFFSET(2) NUMBITS(1) [],
-        /// Port input data (y = 0..15)
-        IDR1 OFFSET(1) NUMBITS(1) [],
-        /// Port input data (y = 0..15)
-        IDR0 OFFSET(0) NUMBITS(1) []
+    PUD [
+        /// Pin 7 pull direction (0=pull-up, 1=pull-down)
+        PIN7 OFFSET(7) NUMBITS(1) [],
+        /// Pin 6 pull direction (0=pull-up, 1=pull-down)
+        PIN6 OFFSET(6) NUMBITS(1) [],
+        /// Pin 5 pull direction (0=pull-up, 1=pull-down)
+        PIN5 OFFSET(5) NUMBITS(1) [],
+        /// Pin 4 pull direction (0=pull-up, 1=pull-down)
+        PIN4 OFFSET(4) NUMBITS(1) [],
+        /// Pin 3 pull direction (0=pull-up, 1=pull-down)
+        PIN3 OFFSET(3) NUMBITS(1) [],
+        /// Pin 2 pull direction (0=pull-up, 1=pull-down)
+        PIN2 OFFSET(2) NUMBITS(1) [],
+        /// Pin 1 pull direction (0=pull-up, 1=pull-down)
+        PIN1 OFFSET(1) NUMBITS(1) [],
+        /// Pin 0 pull direction (0=pull-up, 1=pull-down)
+        PIN0 OFFSET(0) NUMBITS(1) []
     ],
-    ODR [
-        /// Port output data (y = 0..15)
-        ODR15 OFFSET(15) NUMBITS(1) [],
-        /// Port output data (y = 0..15)
-        ODR14 OFFSET(14) NUMBITS(1) [],
-        /// Port output data (y = 0..15)
-        ODR13 OFFSET(13) NUMBITS(1) [],
-        /// Port output data (y = 0..15)
-        ODR12 OFFSET(12) NUMBITS(1) [],
-        /// Port output data (y = 0..15)
-        ODR11 OFFSET(11) NUMBITS(1) [],
-        /// Port output data (y = 0..15)
-        ODR10 OFFSET(10) NUMBITS(1) [],
-        /// Port output data (y = 0..15)
-        ODR9 OFFSET(9) NUMBITS(1) [],
-        /// Port output data (y = 0..15)
-        ODR8 OFFSET(8) NUMBITS(1) [],
-        /// Port output data (y = 0..15)
-        ODR7 OFFSET(7) NUMBITS(1) [],
-        /// Port output data (y = 0..15)
-        ODR6 OFFSET(6) NUMBITS(1) [],
-        /// Port output data (y = 0..15)
-        ODR5 OFFSET(5) NUMBITS(1) [],
-        /// Port output data (y = 0..15)
-        ODR4 OFFSET(4) NUMBITS(1) [],
-        /// Port output data (y = 0..15)
-        ODR3 OFFSET(3) NUMBITS(1) [],
-        /// Port output data (y = 0..15)
-        ODR2 OFFSET(2) NUMBITS(1) [],
-        /// Port output data (y = 0..15)
-        ODR1 OFFSET(1) NUMBITS(1) [],
-        /// Port output data (y = 0..15)
-        ODR0 OFFSET(0) NUMBITS(1) []
-    ],
-    BSRR [
-        /// Port x reset bit y (y = 0..15)
-        BR15 OFFSET(31) NUMBITS(1) [],
-        /// Port x reset bit y (y = 0..15)
-        BR14 OFFSET(30) NUMBITS(1) [],
-        /// Port x reset bit y (y = 0..15)
-        BR13 OFFSET(29) NUMBITS(1) [],
-        /// Port x reset bit y (y = 0..15)
-        BR12 OFFSET(28) NUMBITS(1) [],
-        /// Port x reset bit y (y = 0..15)
-        BR11 OFFSET(27) NUMBITS(1) [],
-        /// Port x reset bit y (y = 0..15)
-        BR10 OFFSET(26) NUMBITS(1) [],
-        /// Port x reset bit y (y = 0..15)
-        BR9 OFFSET(25) NUMBITS(1) [],
-        /// Port x reset bit y (y = 0..15)
-        BR8 OFFSET(24) NUMBITS(1) [],
-        /// Port x reset bit y (y = 0..15)
-        BR7 OFFSET(23) NUMBITS(1) [],
-        /// Port x reset bit y (y = 0..15)
-        BR6 OFFSET(22) NUMBITS(1) [],
-        /// Port x reset bit y (y = 0..15)
-        BR5 OFFSET(21) NUMBITS(1) [],
-        /// Port x reset bit y (y = 0..15)
-        BR4 OFFSET(20) NUMBITS(1) [],
-        /// Port x reset bit y (y = 0..15)
-        BR3 OFFSET(19) NUMBITS(1) [],
-        /// Port x reset bit y (y = 0..15)
-        BR2 OFFSET(18) NUMBITS(1) [],
-        /// Port x reset bit y (y = 0..15)
-        BR1 OFFSET(17) NUMBITS(1) [],
-        /// Port x set bit y (y= 0..15)
-        BR0 OFFSET(16) NUMBITS(1) [],
-        /// Port x set bit y (y= 0..15)
-        BS15 OFFSET(15) NUMBITS(1) [],
-        /// Port x set bit y (y= 0..15)
-        BS14 OFFSET(14) NUMBITS(1) [],
-        /// Port x set bit y (y= 0..15)
-        BS13 OFFSET(13) NUMBITS(1) [],
-        /// Port x set bit y (y= 0..15)
-        BS12 OFFSET(12) NUMBITS(1) [],
-        /// Port x set bit y (y= 0..15)
-        BS11 OFFSET(11) NUMBITS(1) [],
-        /// Port x set bit y (y= 0..15)
-        BS10 OFFSET(10) NUMBITS(1) [],
-        /// Port x set bit y (y= 0..15)
-        BS9 OFFSET(9) NUMBITS(1) [],
-        /// Port x set bit y (y= 0..15)
-        BS8 OFFSET(8) NUMBITS(1) [],
-        /// Port x set bit y (y= 0..15)
-        BS7 OFFSET(7) NUMBITS(1) [],
-        /// Port x set bit y (y= 0..15)
-        BS6 OFFSET(6) NUMBITS(1) [],
-        /// Port x set bit y (y= 0..15)
-        BS5 OFFSET(5) NUMBITS(1) [],
-        /// Port x set bit y (y= 0..15)
-        BS4 OFFSET(4) NUMBITS(1) [],
-        /// Port x set bit y (y= 0..15)
-        BS3 OFFSET(3) NUMBITS(1) [],
-        /// Port x set bit y (y= 0..15)
-        BS2 OFFSET(2) NUMBITS(1) [],
-        /// Port x set bit y (y= 0..15)
-        BS1 OFFSET(1) NUMBITS(1) [],
-        /// Port x set bit y (y= 0..15)
-        BS0 OFFSET(0) NUMBITS(1) []
-    ],
-    LCKR [
-        /// Port x lock bit y (y= 0..15)
-        LCKK OFFSET(16) NUMBITS(1) [],
-        /// Port x lock bit y (y= 0..15)
-        LCK15 OFFSET(15) NUMBITS(1) [],
-        /// Port x lock bit y (y= 0..15)
-        LCK14 OFFSET(14) NUMBITS(1) [],
-        /// Port x lock bit y (y= 0..15)
-        LCK13 OFFSET(13) NUMBITS(1) [],
-        /// Port x lock bit y (y= 0..15)
-        LCK12 OFFSET(12) NUMBITS(1) [],
-        /// Port x lock bit y (y= 0..15)
-        LCK11 OFFSET(11) NUMBITS(1) [],
-        /// Port x lock bit y (y= 0..15)
-        LCK10 OFFSET(10) NUMBITS(1) [],
-        /// Port x lock bit y (y= 0..15)
-        LCK9 OFFSET(9) NUMBITS(1) [],
-        /// Port x lock bit y (y= 0..15)
-        LCK8 OFFSET(8) NUMBITS(1) [],
-        /// Port x lock bit y (y= 0..15)
-        LCK7 OFFSET(7) NUMBITS(1) [],
-        /// Port x lock bit y (y= 0..15)
-        LCK6 OFFSET(6) NUMBITS(1) [],
-        /// Port x lock bit y (y= 0..15)
-        LCK5 OFFSET(5) NUMBITS(1) [],
-        /// Port x lock bit y (y= 0..15)
-        LCK4 OFFSET(4) NUMBITS(1) [],
-        /// Port x lock bit y (y= 0..15)
-        LCK3 OFFSET(3) NUMBITS(1) [],
-        /// Port x lock bit y (y= 0..15)
-        LCK2 OFFSET(2) NUMBITS(1) [],
-        /// Port x lock bit y (y= 0..15)
-        LCK1 OFFSET(1) NUMBITS(1) [],
-        /// Port x lock bit y (y= 0..15)
-        LCK0 OFFSET(0) NUMBITS(1) []
-    ],
-    AFRL [
-        /// Alternate function selection for port x bit y (y = 0..7)
-        AFRL7 OFFSET(28) NUMBITS(4) [],
-        /// Alternate function selection for port x bit y (y = 0..7)
-        AFRL6 OFFSET(24) NUMBITS(4) [],
-        /// Alternate function selection for port x bit y (y = 0..7)
-        AFRL5 OFFSET(20) NUMBITS(4) [],
-        /// Alternate function selection for port x bit y (y = 0..7)
-        AFRL4 OFFSET(16) NUMBITS(4) [],
-        /// Alternate function selection for port x bit y (y = 0..7)
-        AFRL3 OFFSET(12) NUMBITS(4) [],
-        /// Alternate function selection for port x bit y (y = 0..7)
-        AFRL2 OFFSET(8) NUMBITS(4) [],
-        /// Alternate function selection for port x bit y (y = 0..7)
-        AFRL1 OFFSET(4) NUMBITS(4) [],
-        /// Alternate function selection for port x bit y (y = 0..7)
-        AFRL0 OFFSET(0) NUMBITS(4) []
-    ],
-    AFRH [
-        /// Alternate function selection for port x bit y (y = 8..15)
-        AFRH15 OFFSET(28) NUMBITS(4) [],
-        /// Alternate function selection for port x bit y (y = 8..15)
-        AFRH14 OFFSET(24) NUMBITS(4) [],
-        /// Alternate function selection for port x bit y (y = 8..15)
-        AFRH13 OFFSET(20) NUMBITS(4) [],
-        /// Alternate function selection for port x bit y (y = 8..15)
-        AFRH12 OFFSET(16) NUMBITS(4) [],
-        /// Alternate function selection for port x bit y (y = 8..15)
-        AFRH11 OFFSET(12) NUMBITS(4) [],
-        /// Alternate function selection for port x bit y (y = 8..15)
-        AFRH10 OFFSET(8) NUMBITS(4) [],
-        /// Alternate function selection for port x bit y (y = 8..15)
-        AFRH9 OFFSET(4) NUMBITS(4) [],
-        /// Alternate function selection for port x bit y (y = 8..15)
-        AFRH8 OFFSET(0) NUMBITS(4) []
+    OTYPE [
+        /// Pin 7 output type (0=push-pull, 1=open-drain)
+        PIN7 OFFSET(7) NUMBITS(1) [],
+        /// Pin 6 output type (0=push-pull, 1=open-drain)
+        PIN6 OFFSET(6) NUMBITS(1) [],
+        /// Pin 5 output type (0=push-pull, 1=open-drain)
+        PIN5 OFFSET(5) NUMBITS(1) [],
+        /// Pin 4 output type (0=push-pull, 1=open-drain)
+        PIN4 OFFSET(4) NUMBITS(1) [],
+        /// Pin 3 output type (0=push-pull, 1=open-drain)
+        PIN3 OFFSET(3) NUMBITS(1) [],
+        /// Pin 2 output type (0=push-pull, 1=open-drain)
+        PIN2 OFFSET(2) NUMBITS(1) [],
+        /// Pin 1 output type (0=push-pull, 1=open-drain)
+        PIN1 OFFSET(1) NUMBITS(1) [],
+        /// Pin 0 output type (0=push-pull, 1=open-drain)
+        PIN0 OFFSET(0) NUMBITS(1) []
     ]
 ];
 
-const GPIOF_BASE: StaticRef<GpioRegisters> =
-    unsafe { StaticRef::new(0x48001400 as *const GpioRegisters) };
-
-const GPIOE_BASE: StaticRef<GpioRegisters> =
-    unsafe { StaticRef::new(0x48001000 as *const GpioRegisters) };
-
-const GPIOD_BASE: StaticRef<GpioRegisters> =
-    unsafe { StaticRef::new(0x48000C00 as *const GpioRegisters) };
-
-const GPIOC_BASE: StaticRef<GpioRegisters> =
-    unsafe { StaticRef::new(0x48000800 as *const GpioRegisters) };
-
-const GPIOB_BASE: StaticRef<GpioRegisters> =
-    unsafe { StaticRef::new(0x48000400 as *const GpioRegisters) };
-
+// GPIO Port Base Addresses from NPCM400 spec
+const GPIO0_BASE: StaticRef<GpioRegisters> =
+    unsafe { StaticRef::new(0x4008_1000 as *const GpioRegisters) };
+const GPIO1_BASE: StaticRef<GpioRegisters> =
+    unsafe { StaticRef::new(0x4008_3000 as *const GpioRegisters) };
+const GPIO2_BASE: StaticRef<GpioRegisters> =
+    unsafe { StaticRef::new(0x4008_5000 as *const GpioRegisters) };
+const GPIO3_BASE: StaticRef<GpioRegisters> =
+    unsafe { StaticRef::new(0x4008_7000 as *const GpioRegisters) };
+const GPIO4_BASE: StaticRef<GpioRegisters> =
+    unsafe { StaticRef::new(0x4008_9000 as *const GpioRegisters) };
+const GPIO5_BASE: StaticRef<GpioRegisters> =
+    unsafe { StaticRef::new(0x4008_B000 as *const GpioRegisters) };
+const GPIO6_BASE: StaticRef<GpioRegisters> =
+    unsafe { StaticRef::new(0x4008_D000 as *const GpioRegisters) };
+const GPIO7_BASE: StaticRef<GpioRegisters> =
+    unsafe { StaticRef::new(0x4008_F000 as *const GpioRegisters) };
+const GPIO8_BASE: StaticRef<GpioRegisters> =
+    unsafe { StaticRef::new(0x4009_1000 as *const GpioRegisters) };
+const GPIO9_BASE: StaticRef<GpioRegisters> =
+    unsafe { StaticRef::new(0x4009_3000 as *const GpioRegisters) };
 const GPIOA_BASE: StaticRef<GpioRegisters> =
-    unsafe { StaticRef::new(0x48000000 as *const GpioRegisters) };
+    unsafe { StaticRef::new(0x4009_5000 as *const GpioRegisters) };
+const GPIOB_BASE: StaticRef<GpioRegisters> =
+    unsafe { StaticRef::new(0x4009_7000 as *const GpioRegisters) };
+const GPIOC_BASE: StaticRef<GpioRegisters> =
+    unsafe { StaticRef::new(0x4009_9000 as *const GpioRegisters) };
+const GPIOD_BASE: StaticRef<GpioRegisters> =
+    unsafe { StaticRef::new(0x4009_B000 as *const GpioRegisters) };
+const GPIOE_BASE: StaticRef<GpioRegisters> =
+    unsafe { StaticRef::new(0x4009_D000 as *const GpioRegisters) };
+const GPIOF_BASE: StaticRef<GpioRegisters> =
+    unsafe { StaticRef::new(0x4009_F000 as *const GpioRegisters) };
 
-/// STM32F303VCT6 has six GPIO ports labeled from A-F [^1]. This is represented
-/// by three bits.
-///
-/// [^1]: Figure 20. STM32F303xB/C table, page 54 of the datasheet
-#[repr(u32)]
+/// GPIO Port identifier (0-F)
+#[repr(u8)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub enum PortId {
-    A = 0b000,
-    B = 0b001,
-    C = 0b010,
-    D = 0b011,
-    E = 0b100,
-    F = 0b101,
+    Port0 = 0x0,
+    Port1 = 0x1,
+    Port2 = 0x2,
+    Port3 = 0x3,
+    Port4 = 0x4,
+    Port5 = 0x5,
+    Port6 = 0x6,
+    Port7 = 0x7,
+    Port8 = 0x8,
+    Port9 = 0x9,
+    PortA = 0xA,
+    PortB = 0xB,
+    PortC = 0xC,
+    PortD = 0xD,
+    PortE = 0xE,
+    PortF = 0xF,
 }
 
-/// Name of the GPIO pin on the STM32303vct6.
-///
-/// The "Pinout and pin description" section [^1] of the STM32303vct6 datasheet
-/// shows the mapping between the names and the hardware pins on different chip
-/// packages.
-///
-/// The first three bits represent the port and last four bits represent the
-/// pin.
-///
-/// [^1]: Section 4, Pinout and pin description, pages 41-45
+/// GPIO Pin identifier
+/// Format: port (4 bits) | pin (4 bits)
 #[rustfmt::skip]
 #[repr(u8)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub enum PinId {
-    PA00 = 0b0000000, PA01 = 0b0000001, PA02 = 0b0000010, PA03 = 0b0000011,
-    PA04 = 0b0000100, PA05 = 0b0000101, PA06 = 0b0000110, PA07 = 0b0000111,
-    PA08 = 0b0001000, PA09 = 0b0001001, PA10 = 0b0001010, PA11 = 0b0001011,
-    PA12 = 0b0001100, PA13 = 0b0001101, PA14 = 0b0001110, PA15 = 0b0001111,
-
-    PB00 = 0b0010000, PB01 = 0b0010001, PB02 = 0b0010010, PB03 = 0b0010011,
-    PB04 = 0b0010100, PB05 = 0b0010101, PB06 = 0b0010110, PB07 = 0b0010111,
-    PB08 = 0b0011000, PB09 = 0b0011001, PB10 = 0b0011010, PB11 = 0b0011011,
-    PB12 = 0b0011100, PB13 = 0b0011101, PB14 = 0b0011110, PB15 = 0b0011111,
-
-    PC00 = 0b0100000, PC01 = 0b0100001, PC02 = 0b0100010, PC03 = 0b0100011,
-    PC04 = 0b0100100, PC05 = 0b0100101, PC06 = 0b0100110, PC07 = 0b0100111,
-    PC08 = 0b0101000, PC09 = 0b0101001, PC10 = 0b0101010, PC11 = 0b0101011,
-    PC12 = 0b0101100, PC13 = 0b0101101, PC14 = 0b0101110, PC15 = 0b0101111,
-
-    PD00 = 0b0110000, PD01 = 0b0110001, PD02 = 0b0110010, PD03 = 0b0110011,
-    PD04 = 0b0110100, PD05 = 0b0110101, PD06 = 0b0110110, PD07 = 0b0110111,
-    PD08 = 0b0111000, PD09 = 0b0111001, PD10 = 0b0111010, PD11 = 0b0111011,
-    PD12 = 0b0111100, PD13 = 0b0111101, PD14 = 0b0111110, PD15 = 0b0111111,
-
-    PE00 = 0b1000000, PE01 = 0b1000001, PE02 = 0b1000010, PE03 = 0b1000011,
-    PE04 = 0b1000100, PE05 = 0b1000101, PE06 = 0b1000110, PE07 = 0b1000111,
-    PE08 = 0b1001000, PE09 = 0b1001001, PE10 = 0b1001010, PE11 = 0b1001011,
-    PE12 = 0b1001100, PE13 = 0b1001101, PE14 = 0b1001110, PE15 = 0b1001111,
-
-    PF00 = 0b1010000, PF01 = 0b1010001, PF02 = 0b1010010, PF03 = 0b1010011,
-    PF04 = 0b1010100, PF05 = 0b1010101, PF06 = 0b1010110, PF07 = 0b1010111,
-    PF08 = 0b1011000, PF09 = 0b1011001, PF10 = 0b1011010, PF11 = 0b1011011,
-    PF12 = 0b1011100, PF13 = 0b1011101, PF14 = 0b1011110, PF15 = 0b1011111,
-}
-
-impl<'a> GpioPorts<'a> {
-    pub fn get_pin(&self, pinid: PinId) -> Option<&Pin<'a>> {
-        let mut port_num: u8 = pinid as u8;
-
-        // Right shift p by 4 bits, so we can get rid of pin bits
-        port_num >>= 4;
-
-        let mut pin_num: u8 = pinid as u8;
-        // Mask top 3 bits, so can get only the suffix
-        pin_num &= 0b0001111;
-
-        self.pins[usize::from(port_num)][usize::from(pin_num)].as_ref()
-    }
-
-    pub fn get_port(&self, pinid: PinId) -> &Port {
-        let mut port_num: u8 = pinid as u8;
-
-        // Right shift p by 4 bits, so we can get rid of pin bits
-        port_num >>= 4;
-        &self.ports[usize::from(port_num)]
-    }
-
-    pub fn get_port_from_port_id(&self, portid: PortId) -> &Port {
-        &self.ports[portid as usize]
-    }
+    // Port 0
+    P00 = 0x00, P01 = 0x01, P02 = 0x02, P03 = 0x03,
+    P04 = 0x04, P05 = 0x05, P06 = 0x06, P07 = 0x07,
+    // Port 1
+    P10 = 0x10, P11 = 0x11, P12 = 0x12, P13 = 0x13,
+    P14 = 0x14, P15 = 0x15, P16 = 0x16, P17 = 0x17,
+    // Port 2
+    P20 = 0x20, P21 = 0x21, P22 = 0x22, P23 = 0x23,
+    P24 = 0x24, P25 = 0x25, P26 = 0x26, P27 = 0x27,
+    // Port 3
+    P30 = 0x30, P31 = 0x31, P32 = 0x32, P33 = 0x33,
+    P34 = 0x34, P35 = 0x35, P36 = 0x36, P37 = 0x37,
+    // Port 4
+    P40 = 0x40, P41 = 0x41, P42 = 0x42, P43 = 0x43,
+    P44 = 0x44, P45 = 0x45, P46 = 0x46, P47 = 0x47,
+    // Port 5
+    P50 = 0x50, P51 = 0x51, P52 = 0x52, P53 = 0x53,
+    P54 = 0x54, P55 = 0x55, P56 = 0x56, P57 = 0x57,
+    // Port 6
+    P60 = 0x60, P61 = 0x61, P62 = 0x62, P63 = 0x63,
+    P64 = 0x64, P65 = 0x65, P66 = 0x66, P67 = 0x67,
+    // Port 7
+    P70 = 0x70, P71 = 0x71, P72 = 0x72, P73 = 0x73,
+    P74 = 0x74, P75 = 0x75, P76 = 0x76, P77 = 0x77,
+    // Port 8
+    P80 = 0x80, P81 = 0x81, P82 = 0x82, P83 = 0x83,
+    P84 = 0x84, P85 = 0x85, P86 = 0x86, P87 = 0x87,
+    // Port 9
+    P90 = 0x90, P91 = 0x91, P92 = 0x92, P93 = 0x93,
+    P94 = 0x94, P95 = 0x95, P96 = 0x96, P97 = 0x97,
+    // Port A
+    PA0 = 0xA0, PA1 = 0xA1, PA2 = 0xA2, PA3 = 0xA3,
+    PA4 = 0xA4, PA5 = 0xA5, PA6 = 0xA6, PA7 = 0xA7,
+    // Port B
+    PB0 = 0xB0, PB1 = 0xB1, PB2 = 0xB2, PB3 = 0xB3,
+    PB4 = 0xB4, PB5 = 0xB5, PB6 = 0xB6, PB7 = 0xB7,
+    // Port C
+    PC0 = 0xC0, PC1 = 0xC1, PC2 = 0xC2, PC3 = 0xC3,
+    PC4 = 0xC4, PC5 = 0xC5, PC6 = 0xC6, PC7 = 0xC7,
+    // Port D
+    PD0 = 0xD0, PD1 = 0xD1, PD2 = 0xD2, PD3 = 0xD3,
+    PD4 = 0xD4, PD5 = 0xD5, PD6 = 0xD6, PD7 = 0xD7,
+    // Port E
+    PE0 = 0xE0, PE1 = 0xE1, PE2 = 0xE2, PE3 = 0xE3,
+    PE4 = 0xE4, PE5 = 0xE5, PE6 = 0xE6, PE7 = 0xE7,
+    // Port F
+    PF0 = 0xF0, PF1 = 0xF1, PF2 = 0xF2, PF3 = 0xF3,
+    PF4 = 0xF4, PF5 = 0xF5, PF6 = 0xF6, PF7 = 0xF7,
 }
 
 impl PinId {
-    // extract the last 4 bits. [3:0] is the pin number, [6:4] is the port
-    // number
+    /// Extract the pin number (0-7) from the PinId
     pub fn get_pin_number(&self) -> u8 {
-        let mut pin_num = *self as u8;
-
-        pin_num &= 0b00001111;
-        pin_num
+        (*self as u8) & 0x0F
     }
 
-    // extract bits [6:4], which is the port number
+    /// Extract the port number from the PinId
     pub fn get_port_number(&self) -> u8 {
-        let mut port_num: u8 = *self as u8;
+        (*self as u8) >> 4
+    }
 
-        // Right shift p by 4 bits, so we can get rid of pin bits
-        port_num >>= 4;
-        port_num
+    /// Get the bit mask for this pin within its port
+    pub fn get_pin_mask(&self) -> u8 {
+        1 << self.get_pin_number()
     }
 }
 
-enum_from_primitive! {
-    #[repr(u32)]
-    #[derive(PartialEq)]
-    /// GPIO pin mode [^1]
-    ///
-    /// [^1]: Section 7.1.4, page 187 of reference manual
-    pub enum Mode {
-        Input = 0b00,
-        GeneralPurposeOutputMode = 0b01,
-        AlternateFunctionMode = 0b10,
-        AnalogMode = 0b11,
+/// GPIO Port structure
+pub struct Port {
+    registers: StaticRef<GpioRegisters>,
+}
+
+impl Port {
+    const fn new(registers: StaticRef<GpioRegisters>) -> Self {
+        Self { registers }
+    }
+
+    /// Read the direction register bit for a pin
+    fn get_direction(&self, pin_mask: u8) -> bool {
+        (self.registers.dir.get() & pin_mask) != 0
+    }
+
+    /// Set direction bit for a pin (1=output, 0=input)
+    fn set_direction(&self, pin_mask: u8, is_output: bool) {
+        if is_output {
+            self.registers.dir.set(self.registers.dir.get() | pin_mask);
+        } else {
+            self.registers.dir.set(self.registers.dir.get() & !pin_mask);
+        }
+    }
+
+    /// Read input data for a pin
+    fn read_input(&self, pin_mask: u8) -> bool {
+        (self.registers.din.get() & pin_mask) != 0
+    }
+
+    /// Write output data for a pin
+    fn write_output(&self, pin_mask: u8, value: bool) {
+        if value {
+            self.registers.dout.set(self.registers.dout.get() | pin_mask);
+        } else {
+            self.registers.dout.set(self.registers.dout.get() & !pin_mask);
+        }
+    }
+
+    /// Read output data register for a pin
+    fn read_output(&self, pin_mask: u8) -> bool {
+        (self.registers.dout.get() & pin_mask) != 0
+    }
+
+    /// Set pull-up/down configuration
+    fn set_pull(&self, pin_mask: u8, state: hil::gpio::FloatingState) {
+        match state {
+            hil::gpio::FloatingState::PullUp => {
+                // Enable pull, set to pull-up (PUD=0)
+                self.registers.pull.set(self.registers.pull.get() | pin_mask);
+                self.registers.pud.set(self.registers.pud.get() & !pin_mask);
+            }
+            hil::gpio::FloatingState::PullDown => {
+                // Enable pull, set to pull-down (PUD=1)
+                self.registers.pull.set(self.registers.pull.get() | pin_mask);
+                self.registers.pud.set(self.registers.pud.get() | pin_mask);
+            }
+            hil::gpio::FloatingState::PullNone => {
+                // Disable pull
+                self.registers.pull.set(self.registers.pull.get() & !pin_mask);
+            }
+        }
+    }
+
+    /// Get pull-up/down configuration
+    fn get_pull(&self, pin_mask: u8) -> hil::gpio::FloatingState {
+        let pull_enabled = (self.registers.pull.get() & pin_mask) != 0;
+        if !pull_enabled {
+            hil::gpio::FloatingState::PullNone
+        } else {
+            let is_pulldown = (self.registers.pud.get() & pin_mask) != 0;
+            if is_pulldown {
+                hil::gpio::FloatingState::PullDown
+            } else {
+                hil::gpio::FloatingState::PullUp
+            }
+        }
+    }
+
+    /// Set output type (push-pull or open-drain)
+    fn set_output_type(&self, pin_mask: u8, open_drain: bool) {
+        if open_drain {
+            self.registers.otype.set(self.registers.otype.get() | pin_mask);
+        } else {
+            self.registers.otype.set(self.registers.otype.get() & !pin_mask);
+        }
     }
 }
 
-/// Alternate functions that may be assigned to a `Pin`.
-///
-/// GPIO pins on the STM32303vct6 may serve multiple functions. In addition to
-/// the default functionality, each pin can be assigned up to sixteen different
-/// alternate functions. The various functions for each pin are described in
-/// "Alternate Function"" section of the STM32303vct6 datasheet[^1].
-///
-/// Alternate Function bit mapping is shown here[^2].
-///
-/// [^1]: Section 4, Pinout and pin description, Table 14. Alternate function,
-///       pages 45-52
-///
-/// [^2]: Section 7.4.9, page 192 of Reference Manual // TODO
-#[repr(u32)]
-pub enum AlternateFunction {
-    AF0 = 0b0000,
-    AF1 = 0b0001,
-    AF2 = 0b0010,
-    AF3 = 0b0011,
-    AF4 = 0b0100,
-    AF5 = 0b0101,
-    AF6 = 0b0110,
-    AF7 = 0b0111,
-    AF8 = 0b1000,
-    AF9 = 0b1001,
-    AF10 = 0b1010,
-    AF11 = 0b1011,
-    AF12 = 0b1100,
-    AF13 = 0b1101,
-    AF14 = 0b1110,
-    AF15 = 0b1111,
-}
-
-enum_from_primitive! {
-    #[repr(u32)]
-    /// GPIO pin internal pull-up and pull-down [^1]
-    ///
-    /// [^1]: Section 11.4.4, page 238 of reference manual
-    enum PullUpPullDown {
-        NoPullUpPullDown = 0b00,
-        PullUp = 0b01,
-        PullDown = 0b10,
-    }
-}
-
-macro_rules! declare_gpio_pins {
-    ($($pin:ident)*) => {
-        [
-            $(Some(Pin::new(PinId::$pin)), )*
-        ]
-    }
-}
-
-// Note: This would probably be better structured as each port holding
-// the pins associated with it, but here they are kept separate for
-// historical reasons. If writing new GPIO code, look elsewhere for
-// a template on how to structure the relationship between ports and pins.
+/// GPIO Ports collection
 pub struct GpioPorts<'a> {
-    ports: [Port; 6],
-    pins: [[Option<Pin<'a>>; 16]; 6],
+    ports: [Port; 16],
+    pins: [[Option<Pin<'a>>; 8]; 16],
 }
 
 impl<'a> GpioPorts<'a> {
     pub fn new() -> Self {
         Self {
             ports: [
-                Port {
-                    _registers: GPIOA_BASE,
-                },
-                Port {
-                    _registers: GPIOB_BASE,
-                },
-                Port {
-                    _registers: GPIOC_BASE,
-                },
-                Port {
-                    _registers: GPIOD_BASE,
-                },
-                Port {
-                    _registers: GPIOE_BASE,
-                },
-                Port {
-                    _registers: GPIOF_BASE,
-                },
+                Port::new(GPIO0_BASE),
+                Port::new(GPIO1_BASE),
+                Port::new(GPIO2_BASE),
+                Port::new(GPIO3_BASE),
+                Port::new(GPIO4_BASE),
+                Port::new(GPIO5_BASE),
+                Port::new(GPIO6_BASE),
+                Port::new(GPIO7_BASE),
+                Port::new(GPIO8_BASE),
+                Port::new(GPIO9_BASE),
+                Port::new(GPIOA_BASE),
+                Port::new(GPIOB_BASE),
+                Port::new(GPIOC_BASE),
+                Port::new(GPIOD_BASE),
+                Port::new(GPIOE_BASE),
+                Port::new(GPIOF_BASE),
             ],
-            pins: [
-                declare_gpio_pins! {
-                    PA00 PA01 PA02 PA03 PA04 PA05 PA06 PA07
-                    PA08 PA09 PA10 PA11 PA12 PA13 PA14 PA15
-                },
-                declare_gpio_pins! {
-                    PB00 PB01 PB02 PB03 PB04 PB05 PB06 PB07
-                    PB08 PB09 PB10 PB11 PB12 PB13 PB14 PB15
-                },
-                declare_gpio_pins! {
-                    PC00 PC01 PC02 PC03 PC04 PC05 PC06 PC07
-                    PC08 PC09 PC10 PC11 PC12 PC13 PC14 PC15
-                },
-                declare_gpio_pins! {
-                    PD00 PD01 PD02 PD03 PD04 PD05 PD06 PD07
-                    PD08 PD09 PD10 PD11 PD12 PD13 PD14 PD15
-                },
-                declare_gpio_pins! {
-                    PE00 PE01 PE02 PE03 PE04 PE05 PE06 PE07
-                    PE08 PE09 PE10 PE11 PE12 PE13 PE14 PE15
-                },
-                [
-                    Some(Pin::new(PinId::PF00)),
-                    Some(Pin::new(PinId::PF01)),
-                    Some(Pin::new(PinId::PF02)),
-                    Some(Pin::new(PinId::PF03)),
-                    Some(Pin::new(PinId::PF04)),
-                    Some(Pin::new(PinId::PF05)),
-                    Some(Pin::new(PinId::PF06)),
-                    Some(Pin::new(PinId::PF07)),
-                    Some(Pin::new(PinId::PF08)),
-                    Some(Pin::new(PinId::PF09)),
-                    Some(Pin::new(PinId::PF10)),
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                ],
-            ],
+            pins: Self::initialize_pins(),
         }
     }
 
+    /// Initialize all pins
+    const fn initialize_pins() -> [[Option<Pin<'a>>; 8]; 16] {
+        [
+            // Port 0
+            [
+                Some(Pin::new(PinId::P00)),
+                Some(Pin::new(PinId::P01)),
+                Some(Pin::new(PinId::P02)),
+                Some(Pin::new(PinId::P03)),
+                Some(Pin::new(PinId::P04)),
+                Some(Pin::new(PinId::P05)),
+                Some(Pin::new(PinId::P06)),
+                Some(Pin::new(PinId::P07)),
+            ],
+            // Port 1
+            [
+                Some(Pin::new(PinId::P10)),
+                Some(Pin::new(PinId::P11)),
+                Some(Pin::new(PinId::P12)),
+                Some(Pin::new(PinId::P13)),
+                Some(Pin::new(PinId::P14)),
+                Some(Pin::new(PinId::P15)),
+                Some(Pin::new(PinId::P16)),
+                Some(Pin::new(PinId::P17)),
+            ],
+            // Port 2
+            [
+                Some(Pin::new(PinId::P20)),
+                Some(Pin::new(PinId::P21)),
+                Some(Pin::new(PinId::P22)),
+                Some(Pin::new(PinId::P23)),
+                Some(Pin::new(PinId::P24)),
+                Some(Pin::new(PinId::P25)),
+                Some(Pin::new(PinId::P26)),
+                Some(Pin::new(PinId::P27)),
+            ],
+            // Port 3
+            [
+                Some(Pin::new(PinId::P30)),
+                Some(Pin::new(PinId::P31)),
+                Some(Pin::new(PinId::P32)),
+                Some(Pin::new(PinId::P33)),
+                Some(Pin::new(PinId::P34)),
+                Some(Pin::new(PinId::P35)),
+                Some(Pin::new(PinId::P36)),
+                Some(Pin::new(PinId::P37)),
+            ],
+            // Port 4
+            [
+                Some(Pin::new(PinId::P40)),
+                Some(Pin::new(PinId::P41)),
+                Some(Pin::new(PinId::P42)),
+                Some(Pin::new(PinId::P43)),
+                Some(Pin::new(PinId::P44)),
+                Some(Pin::new(PinId::P45)),
+                Some(Pin::new(PinId::P46)),
+                Some(Pin::new(PinId::P47)),
+            ],
+            // Port 5
+            [
+                Some(Pin::new(PinId::P50)),
+                Some(Pin::new(PinId::P51)),
+                Some(Pin::new(PinId::P52)),
+                Some(Pin::new(PinId::P53)),
+                Some(Pin::new(PinId::P54)),
+                Some(Pin::new(PinId::P55)),
+                Some(Pin::new(PinId::P56)),
+                Some(Pin::new(PinId::P57)),
+            ],
+            // Port 6
+            [
+                Some(Pin::new(PinId::P60)),
+                Some(Pin::new(PinId::P61)),
+                Some(Pin::new(PinId::P62)),
+                Some(Pin::new(PinId::P63)),
+                Some(Pin::new(PinId::P64)),
+                Some(Pin::new(PinId::P65)),
+                Some(Pin::new(PinId::P66)),
+                Some(Pin::new(PinId::P67)),
+            ],
+            // Port 7
+            [
+                Some(Pin::new(PinId::P70)),
+                Some(Pin::new(PinId::P71)),
+                Some(Pin::new(PinId::P72)),
+                Some(Pin::new(PinId::P73)),
+                Some(Pin::new(PinId::P74)),
+                Some(Pin::new(PinId::P75)),
+                Some(Pin::new(PinId::P76)),
+                Some(Pin::new(PinId::P77)),
+            ],
+            // Port 8
+            [
+                Some(Pin::new(PinId::P80)),
+                Some(Pin::new(PinId::P81)),
+                Some(Pin::new(PinId::P82)),
+                Some(Pin::new(PinId::P83)),
+                Some(Pin::new(PinId::P84)),
+                Some(Pin::new(PinId::P85)),
+                Some(Pin::new(PinId::P86)),
+                Some(Pin::new(PinId::P87)),
+            ],
+            // Port 9
+            [
+                Some(Pin::new(PinId::P90)),
+                Some(Pin::new(PinId::P91)),
+                Some(Pin::new(PinId::P92)),
+                Some(Pin::new(PinId::P93)),
+                Some(Pin::new(PinId::P94)),
+                Some(Pin::new(PinId::P95)),
+                Some(Pin::new(PinId::P96)),
+                Some(Pin::new(PinId::P97)),
+            ],
+            // Port A
+            [
+                Some(Pin::new(PinId::PA0)),
+                Some(Pin::new(PinId::PA1)),
+                Some(Pin::new(PinId::PA2)),
+                Some(Pin::new(PinId::PA3)),
+                Some(Pin::new(PinId::PA4)),
+                Some(Pin::new(PinId::PA5)),
+                Some(Pin::new(PinId::PA6)),
+                Some(Pin::new(PinId::PA7)),
+            ],
+            // Port B
+            [
+                Some(Pin::new(PinId::PB0)),
+                Some(Pin::new(PinId::PB1)),
+                Some(Pin::new(PinId::PB2)),
+                Some(Pin::new(PinId::PB3)),
+                Some(Pin::new(PinId::PB4)),
+                Some(Pin::new(PinId::PB5)),
+                Some(Pin::new(PinId::PB6)),
+                Some(Pin::new(PinId::PB7)),
+            ],
+            // Port C
+            [
+                Some(Pin::new(PinId::PC0)),
+                Some(Pin::new(PinId::PC1)),
+                Some(Pin::new(PinId::PC2)),
+                Some(Pin::new(PinId::PC3)),
+                Some(Pin::new(PinId::PC4)),
+                Some(Pin::new(PinId::PC5)),
+                Some(Pin::new(PinId::PC6)),
+                Some(Pin::new(PinId::PC7)),
+            ],
+            // Port D
+            [
+                Some(Pin::new(PinId::PD0)),
+                Some(Pin::new(PinId::PD1)),
+                Some(Pin::new(PinId::PD2)),
+                Some(Pin::new(PinId::PD3)),
+                Some(Pin::new(PinId::PD4)),
+                Some(Pin::new(PinId::PD5)),
+                Some(Pin::new(PinId::PD6)),
+                Some(Pin::new(PinId::PD7)),
+            ],
+            // Port E
+            [
+                Some(Pin::new(PinId::PE0)),
+                Some(Pin::new(PinId::PE1)),
+                Some(Pin::new(PinId::PE2)),
+                Some(Pin::new(PinId::PE3)),
+                Some(Pin::new(PinId::PE4)),
+                Some(Pin::new(PinId::PE5)),
+                Some(Pin::new(PinId::PE6)),
+                Some(Pin::new(PinId::PE7)),
+            ],
+            // Port F
+            [
+                Some(Pin::new(PinId::PF0)),
+                Some(Pin::new(PinId::PF1)),
+                Some(Pin::new(PinId::PF2)),
+                Some(Pin::new(PinId::PF3)),
+                Some(Pin::new(PinId::PF4)),
+                Some(Pin::new(PinId::PF5)),
+                Some(Pin::new(PinId::PF6)),
+                Some(Pin::new(PinId::PF7)),
+            ],
+        ]
+    }
+
+    /// Get a pin by its PinId
+    pub fn get_pin(&self, pinid: PinId) -> Option<&Pin<'a>> {
+        let port_num = pinid.get_port_number() as usize;
+        let pin_num = pinid.get_pin_number() as usize;
+        self.pins[port_num][pin_num].as_ref()
+    }
+
+    /// Get a port by its PortId
+    pub fn get_port(&self, portid: PortId) -> &Port {
+        &self.ports[portid as usize]
+    }
+
+    /// Get a port by PinId
+    pub fn get_port_from_pin(&self, pinid: PinId) -> &Port {
+        &self.ports[pinid.get_port_number() as usize]
+    }
+
+    /// Setup circular dependencies for pins
     pub fn setup_circular_deps(&'a self) {
         for pin_group in self.pins.iter() {
             for pin in pin_group {
@@ -657,12 +606,7 @@ impl<'a> GpioPorts<'a> {
     }
 }
 
-pub struct Port {
-    _registers: StaticRef<GpioRegisters>,
-    // clock: PortClock,
-}
-
-// `exti_lineid` is used to configure EXTI settings for the Pin.
+/// GPIO Pin structure
 pub struct Pin<'a> {
     pinid: PinId,
     ports_ref: OptionalCell<&'a GpioPorts<'a>>,
@@ -682,389 +626,226 @@ impl<'a> Pin<'a> {
         self.ports_ref.set(ports);
     }
 
-    pub fn set_client(&self, client: &'a dyn hil::gpio::Client) {
-        self.client.set(client);
-    }
-
-    pub fn handle_interrupt(&self) {
-        self.client.map(|client| client.fired());
-    }
-
-    pub fn get_mode(&self) -> Mode {
-        // let port = self.ports_ref.unwrap_or_panic().get_port(self.pinid); // Unwrap fail = Err
-
-        // let val = match self.pinid.get_pin_number() {
-        //     0b0000 => port.registers.moder.read(MODER::MODER0),
-        //     0b0001 => port.registers.moder.read(MODER::MODER1),
-        //     0b0010 => port.registers.moder.read(MODER::MODER2),
-        //     0b0011 => port.registers.moder.read(MODER::MODER3),
-        //     0b0100 => port.registers.moder.read(MODER::MODER4),
-        //     0b0101 => port.registers.moder.read(MODER::MODER5),
-        //     0b0110 => port.registers.moder.read(MODER::MODER6),
-        //     0b0111 => port.registers.moder.read(MODER::MODER7),
-        //     0b1000 => port.registers.moder.read(MODER::MODER8),
-        //     0b1001 => port.registers.moder.read(MODER::MODER9),
-        //     0b1010 => port.registers.moder.read(MODER::MODER10),
-        //     0b1011 => port.registers.moder.read(MODER::MODER11),
-        //     0b1100 => port.registers.moder.read(MODER::MODER12),
-        //     0b1101 => port.registers.moder.read(MODER::MODER13),
-        //     0b1110 => port.registers.moder.read(MODER::MODER14),
-        //     0b1111 => port.registers.moder.read(MODER::MODER15),
-        //     _ => 0,
-        // };
-
-        // Mode::from_u32(val).unwrap_or(Mode::Input)
-
-        Mode::from_u32(0).unwrap_or(Mode::Input)
-    }
-
-    pub fn set_mode(&self, _mode: Mode) {
-        // let port = self.ports_ref.unwrap_or_panic().get_port(self.pinid); // Unwrap fail =
-
-        // match self.pinid.get_pin_number() {
-        //     0b0000 => port.registers.moder.modify(MODER::MODER0.val(mode as u32)),
-        //     0b0001 => port.registers.moder.modify(MODER::MODER1.val(mode as u32)),
-        //     0b0010 => port.registers.moder.modify(MODER::MODER2.val(mode as u32)),
-        //     0b0011 => port.registers.moder.modify(MODER::MODER3.val(mode as u32)),
-        //     0b0100 => port.registers.moder.modify(MODER::MODER4.val(mode as u32)),
-        //     0b0101 => port.registers.moder.modify(MODER::MODER5.val(mode as u32)),
-        //     0b0110 => port.registers.moder.modify(MODER::MODER6.val(mode as u32)),
-        //     0b0111 => port.registers.moder.modify(MODER::MODER7.val(mode as u32)),
-        //     0b1000 => port.registers.moder.modify(MODER::MODER8.val(mode as u32)),
-        //     0b1001 => port.registers.moder.modify(MODER::MODER9.val(mode as u32)),
-        //     0b1010 => port.registers.moder.modify(MODER::MODER10.val(mode as u32)),
-        //     0b1011 => port.registers.moder.modify(MODER::MODER11.val(mode as u32)),
-        //     0b1100 => port.registers.moder.modify(MODER::MODER12.val(mode as u32)),
-        //     0b1101 => port.registers.moder.modify(MODER::MODER13.val(mode as u32)),
-        //     0b1110 => port.registers.moder.modify(MODER::MODER14.val(mode as u32)),
-        //     0b1111 => port.registers.moder.modify(MODER::MODER15.val(mode as u32)),
-        //     _ => {}
-        // }
-    }
-
-    pub fn set_alternate_function(&self, _af: AlternateFunction) {
-        // let port = self.ports_ref.unwrap_or_panic().get_port(self.pinid); // Unwrap fail =
-
-        // match self.pinid.get_pin_number() {
-        //     0b0000 => port.registers.afrl.modify(AFRL::AFRL0.val(af as u32)),
-        //     0b0001 => port.registers.afrl.modify(AFRL::AFRL1.val(af as u32)),
-        //     0b0010 => port.registers.afrl.modify(AFRL::AFRL2.val(af as u32)),
-        //     0b0011 => port.registers.afrl.modify(AFRL::AFRL3.val(af as u32)),
-        //     0b0100 => port.registers.afrl.modify(AFRL::AFRL4.val(af as u32)),
-        //     0b0101 => port.registers.afrl.modify(AFRL::AFRL5.val(af as u32)),
-        //     0b0110 => port.registers.afrl.modify(AFRL::AFRL6.val(af as u32)),
-        //     0b0111 => port.registers.afrl.modify(AFRL::AFRL7.val(af as u32)),
-        //     0b1000 => port.registers.afrh.modify(AFRH::AFRH8.val(af as u32)),
-        //     0b1001 => port.registers.afrh.modify(AFRH::AFRH9.val(af as u32)),
-        //     0b1010 => port.registers.afrh.modify(AFRH::AFRH10.val(af as u32)),
-        //     0b1011 => port.registers.afrh.modify(AFRH::AFRH11.val(af as u32)),
-        //     0b1100 => port.registers.afrh.modify(AFRH::AFRH12.val(af as u32)),
-        //     0b1101 => port.registers.afrh.modify(AFRH::AFRH13.val(af as u32)),
-        //     0b1110 => port.registers.afrh.modify(AFRH::AFRH14.val(af as u32)),
-        //     0b1111 => port.registers.afrh.modify(AFRH::AFRH15.val(af as u32)),
-        //     _ => {}
-        // }
-    }
-
     pub fn get_pinid(&self) -> PinId {
         self.pinid
     }
 
-    pub unsafe fn enable_interrupt(&'static self) {
-        // let exti_line_id = LineId::from_u8(self.pinid.get_pin_number()).unwrap();
-
-        // self.exti.associate_line_gpiopin(exti_line_id, self);
+    /// Get the port for this pin
+    fn get_port(&self) -> &Port {
+        self.ports_ref
+            .map(|ports| ports.get_port_from_pin(self.pinid))
+            .unwrap()
     }
 
-    fn set_mode_output_pushpull(&self) {
-        // let port = self.ports_ref.unwrap_or_panic().get_port(self.pinid); // Unwrap fail =
-
-        // match self.pinid.get_pin_number() {
-        //     0b0000 => port.registers.otyper.modify(OTYPER::OT0::CLEAR),
-        //     0b0001 => port.registers.otyper.modify(OTYPER::OT1::CLEAR),
-        //     0b0010 => port.registers.otyper.modify(OTYPER::OT2::CLEAR),
-        //     0b0011 => port.registers.otyper.modify(OTYPER::OT3::CLEAR),
-        //     0b0100 => port.registers.otyper.modify(OTYPER::OT4::CLEAR),
-        //     0b0101 => port.registers.otyper.modify(OTYPER::OT5::CLEAR),
-        //     0b0110 => port.registers.otyper.modify(OTYPER::OT6::CLEAR),
-        //     0b0111 => port.registers.otyper.modify(OTYPER::OT7::CLEAR),
-        //     0b1000 => port.registers.otyper.modify(OTYPER::OT8::CLEAR),
-        //     0b1001 => port.registers.otyper.modify(OTYPER::OT9::CLEAR),
-        //     0b1010 => port.registers.otyper.modify(OTYPER::OT10::CLEAR),
-        //     0b1011 => port.registers.otyper.modify(OTYPER::OT11::CLEAR),
-        //     0b1100 => port.registers.otyper.modify(OTYPER::OT12::CLEAR),
-        //     0b1101 => port.registers.otyper.modify(OTYPER::OT13::CLEAR),
-        //     0b1110 => port.registers.otyper.modify(OTYPER::OT14::CLEAR),
-        //     0b1111 => port.registers.otyper.modify(OTYPER::OT15::CLEAR),
-        //     _ => {}
-        // }
-    }
-
-    fn get_pullup_pulldown(&self) -> PullUpPullDown {
-        // let port = self.ports_ref.unwrap_or_panic().get_port(self.pinid); // Unwrap fail =
-
-        // let val = match self.pinid.get_pin_number() {
-        //     0b0000 => port.registers.pupdr.read(PUPDR::PUPDR0),
-        //     0b0001 => port.registers.pupdr.read(PUPDR::PUPDR1),
-        //     0b0010 => port.registers.pupdr.read(PUPDR::PUPDR2),
-        //     0b0011 => port.registers.pupdr.read(PUPDR::PUPDR3),
-        //     0b0100 => port.registers.pupdr.read(PUPDR::PUPDR4),
-        //     0b0101 => port.registers.pupdr.read(PUPDR::PUPDR5),
-        //     0b0110 => port.registers.pupdr.read(PUPDR::PUPDR6),
-        //     0b0111 => port.registers.pupdr.read(PUPDR::PUPDR7),
-        //     0b1000 => port.registers.pupdr.read(PUPDR::PUPDR8),
-        //     0b1001 => port.registers.pupdr.read(PUPDR::PUPDR9),
-        //     0b1010 => port.registers.pupdr.read(PUPDR::PUPDR10),
-        //     0b1011 => port.registers.pupdr.read(PUPDR::PUPDR11),
-        //     0b1100 => port.registers.pupdr.read(PUPDR::PUPDR12),
-        //     0b1101 => port.registers.pupdr.read(PUPDR::PUPDR13),
-        //     0b1110 => port.registers.pupdr.read(PUPDR::PUPDR14),
-        //     0b1111 => port.registers.pupdr.read(PUPDR::PUPDR15),
-        //     _ => 0,
-        // };
-
-        // PullUpPullDown::from_u32(val).unwrap_or(PullUpPullDown::NoPullUpPullDown)
-
-        PullUpPullDown::from_u32(0).unwrap_or(PullUpPullDown::NoPullUpPullDown)
-    }
-
-    fn set_pullup_pulldown(&self, _pupd: PullUpPullDown) {
-        // let port = self.ports_ref.unwrap_or_panic().get_port(self.pinid); // Unwrap fail =
-
-        // match self.pinid.get_pin_number() {
-        //     0b0000 => port.registers.pupdr.modify(PUPDR::PUPDR0.val(pupd as u32)),
-        //     0b0001 => port.registers.pupdr.modify(PUPDR::PUPDR1.val(pupd as u32)),
-        //     0b0010 => port.registers.pupdr.modify(PUPDR::PUPDR2.val(pupd as u32)),
-        //     0b0011 => port.registers.pupdr.modify(PUPDR::PUPDR3.val(pupd as u32)),
-        //     0b0100 => port.registers.pupdr.modify(PUPDR::PUPDR4.val(pupd as u32)),
-        //     0b0101 => port.registers.pupdr.modify(PUPDR::PUPDR5.val(pupd as u32)),
-        //     0b0110 => port.registers.pupdr.modify(PUPDR::PUPDR6.val(pupd as u32)),
-        //     0b0111 => port.registers.pupdr.modify(PUPDR::PUPDR7.val(pupd as u32)),
-        //     0b1000 => port.registers.pupdr.modify(PUPDR::PUPDR8.val(pupd as u32)),
-        //     0b1001 => port.registers.pupdr.modify(PUPDR::PUPDR9.val(pupd as u32)),
-        //     0b1010 => port.registers.pupdr.modify(PUPDR::PUPDR10.val(pupd as u32)),
-        //     0b1011 => port.registers.pupdr.modify(PUPDR::PUPDR11.val(pupd as u32)),
-        //     0b1100 => port.registers.pupdr.modify(PUPDR::PUPDR12.val(pupd as u32)),
-        //     0b1101 => port.registers.pupdr.modify(PUPDR::PUPDR13.val(pupd as u32)),
-        //     0b1110 => port.registers.pupdr.modify(PUPDR::PUPDR14.val(pupd as u32)),
-        //     0b1111 => port.registers.pupdr.modify(PUPDR::PUPDR15.val(pupd as u32)),
-        //     _ => {}
-        // }
-    }
-
-    fn set_output_high(&self) {
-        // let port = self.ports_ref.unwrap_or_panic().get_port(self.pinid); // Unwrap fail =
-
-        // match self.pinid.get_pin_number() {
-        //     0b0000 => port.registers.bsrr.write(BSRR::BS0::SET),
-        //     0b0001 => port.registers.bsrr.write(BSRR::BS1::SET),
-        //     0b0010 => port.registers.bsrr.write(BSRR::BS2::SET),
-        //     0b0011 => port.registers.bsrr.write(BSRR::BS3::SET),
-        //     0b0100 => port.registers.bsrr.write(BSRR::BS4::SET),
-        //     0b0101 => port.registers.bsrr.write(BSRR::BS5::SET),
-        //     0b0110 => port.registers.bsrr.write(BSRR::BS6::SET),
-        //     0b0111 => port.registers.bsrr.write(BSRR::BS7::SET),
-        //     0b1000 => port.registers.bsrr.write(BSRR::BS8::SET),
-        //     0b1001 => port.registers.bsrr.write(BSRR::BS9::SET),
-        //     0b1010 => port.registers.bsrr.write(BSRR::BS10::SET),
-        //     0b1011 => port.registers.bsrr.write(BSRR::BS11::SET),
-        //     0b1100 => port.registers.bsrr.write(BSRR::BS12::SET),
-        //     0b1101 => port.registers.bsrr.write(BSRR::BS13::SET),
-        //     0b1110 => port.registers.bsrr.write(BSRR::BS14::SET),
-        //     0b1111 => port.registers.bsrr.write(BSRR::BS15::SET),
-        //     _ => {}
-        // }
-    }
-
-    fn set_output_low(&self) {
-        // let port = self.ports_ref.unwrap_or_panic().get_port(self.pinid); // Unwrap fail =
-
-        // match self.pinid.get_pin_number() {
-        //     0b0000 => port.registers.bsrr.write(BSRR::BR0::SET),
-        //     0b0001 => port.registers.bsrr.write(BSRR::BR1::SET),
-        //     0b0010 => port.registers.bsrr.write(BSRR::BR2::SET),
-        //     0b0011 => port.registers.bsrr.write(BSRR::BR3::SET),
-        //     0b0100 => port.registers.bsrr.write(BSRR::BR4::SET),
-        //     0b0101 => port.registers.bsrr.write(BSRR::BR5::SET),
-        //     0b0110 => port.registers.bsrr.write(BSRR::BR6::SET),
-        //     0b0111 => port.registers.bsrr.write(BSRR::BR7::SET),
-        //     0b1000 => port.registers.bsrr.write(BSRR::BR8::SET),
-        //     0b1001 => port.registers.bsrr.write(BSRR::BR9::SET),
-        //     0b1010 => port.registers.bsrr.write(BSRR::BR10::SET),
-        //     0b1011 => port.registers.bsrr.write(BSRR::BR11::SET),
-        //     0b1100 => port.registers.bsrr.write(BSRR::BR12::SET),
-        //     0b1101 => port.registers.bsrr.write(BSRR::BR13::SET),
-        //     0b1110 => port.registers.bsrr.write(BSRR::BR14::SET),
-        //     0b1111 => port.registers.bsrr.write(BSRR::BR15::SET),
-        //     _ => {}
-        // }
-    }
-
-    fn is_output_high(&self) -> bool {
-        // let port = self.ports_ref.unwrap_or_panic().get_port(self.pinid); // Unwrap fail =
-
-        // match self.pinid.get_pin_number() {
-        //     0b0000 => port.registers.odr.is_set(ODR::ODR0),
-        //     0b0001 => port.registers.odr.is_set(ODR::ODR1),
-        //     0b0010 => port.registers.odr.is_set(ODR::ODR2),
-        //     0b0011 => port.registers.odr.is_set(ODR::ODR3),
-        //     0b0100 => port.registers.odr.is_set(ODR::ODR4),
-        //     0b0101 => port.registers.odr.is_set(ODR::ODR5),
-        //     0b0110 => port.registers.odr.is_set(ODR::ODR6),
-        //     0b0111 => port.registers.odr.is_set(ODR::ODR7),
-        //     0b1000 => port.registers.odr.is_set(ODR::ODR8),
-        //     0b1001 => port.registers.odr.is_set(ODR::ODR9),
-        //     0b1010 => port.registers.odr.is_set(ODR::ODR10),
-        //     0b1011 => port.registers.odr.is_set(ODR::ODR11),
-        //     0b1100 => port.registers.odr.is_set(ODR::ODR12),
-        //     0b1101 => port.registers.odr.is_set(ODR::ODR13),
-        //     0b1110 => port.registers.odr.is_set(ODR::ODR14),
-        //     0b1111 => port.registers.odr.is_set(ODR::ODR15),
-        //     _ => false,
-        // }
-
-        true
-    }
-
-    fn toggle_output(&self) -> bool {
-        if self.is_output_high() {
-            self.set_output_low();
-            false
-        } else {
-            self.set_output_high();
-            true
-        }
-    }
-
-    fn read_input(&self) -> bool {
-        // let port = self.ports_ref.unwrap_or_panic().get_port(self.pinid); // Unwrap fail =
-
-        // match self.pinid.get_pin_number() {
-        //     0b0000 => port.registers.idr.is_set(IDR::IDR0),
-        //     0b0001 => port.registers.idr.is_set(IDR::IDR1),
-        //     0b0010 => port.registers.idr.is_set(IDR::IDR2),
-        //     0b0011 => port.registers.idr.is_set(IDR::IDR3),
-        //     0b0100 => port.registers.idr.is_set(IDR::IDR4),
-        //     0b0101 => port.registers.idr.is_set(IDR::IDR5),
-        //     0b0110 => port.registers.idr.is_set(IDR::IDR6),
-        //     0b0111 => port.registers.idr.is_set(IDR::IDR7),
-        //     0b1000 => port.registers.idr.is_set(IDR::IDR8),
-        //     0b1001 => port.registers.idr.is_set(IDR::IDR9),
-        //     0b1010 => port.registers.idr.is_set(IDR::IDR10),
-        //     0b1011 => port.registers.idr.is_set(IDR::IDR11),
-        //     0b1100 => port.registers.idr.is_set(IDR::IDR12),
-        //     0b1101 => port.registers.idr.is_set(IDR::IDR13),
-        //     0b1110 => port.registers.idr.is_set(IDR::IDR14),
-        //     0b1111 => port.registers.idr.is_set(IDR::IDR15),
-        //     _ => false,
-        // }
-
-        true
+    /// Get the pin mask for this pin
+    fn get_pin_mask(&self) -> u8 {
+        self.pinid.get_pin_mask()
     }
 }
 
-impl hil::gpio::Configure for Pin<'_> {
-    /// Output mode default is push-pull
+impl<'a> hil::gpio::Configure for Pin<'a> {
+    fn configuration(&self) -> hil::gpio::Configuration {
+        let port = self.get_port();
+        let pin_mask = self.get_pin_mask();
+
+        if port.get_direction(pin_mask) {
+            hil::gpio::Configuration::Output
+        } else {
+            hil::gpio::Configuration::Input
+        }
+    }
+
     fn make_output(&self) -> hil::gpio::Configuration {
-        self.set_mode(Mode::GeneralPurposeOutputMode);
-        self.set_mode_output_pushpull();
+        let port = self.get_port();
+        let pin_mask = self.get_pin_mask();
+
+        // Set direction to output
+        port.set_direction(pin_mask, true);
+        // Configure as push-pull by default
+        port.set_output_type(pin_mask, false);
+
         hil::gpio::Configuration::Output
     }
 
-    /// Input mode default is no internal pull-up, no pull-down (i.e.,
-    /// floating). Also upon setting the mode as input, the internal schmitt
-    /// trigger is automatically activated. Schmitt trigger is deactivated in
-    /// AnalogMode.
-    fn make_input(&self) -> hil::gpio::Configuration {
-        self.set_mode(Mode::Input);
+    fn disable_output(&self) -> hil::gpio::Configuration {
+        let port = self.get_port();
+        let pin_mask = self.get_pin_mask();
+
+        // Set direction to input
+        port.set_direction(pin_mask, false);
+
         hil::gpio::Configuration::Input
     }
 
-    /// According to AN4899, Section 6.1, setting to AnalogMode, disables
-    /// internal schmitt trigger. We do not disable clock to the GPIO port,
-    /// because there could be other pins active on the port.
-    fn deactivate_to_low_power(&self) {
-        self.set_mode(Mode::AnalogMode);
-    }
+    fn make_input(&self) -> hil::gpio::Configuration {
+        let port = self.get_port();
+        let pin_mask = self.get_pin_mask();
 
-    fn disable_output(&self) -> hil::gpio::Configuration {
-        self.set_mode(Mode::AnalogMode);
-        hil::gpio::Configuration::LowPower
+        // Set direction to input
+        port.set_direction(pin_mask, false);
+
+        hil::gpio::Configuration::Input
     }
 
     fn disable_input(&self) -> hil::gpio::Configuration {
-        self.set_mode(Mode::AnalogMode);
-        hil::gpio::Configuration::LowPower
+        // NPCM400 doesn't have a separate disable input state
+        // Just return the current configuration
+        self.configuration()
     }
 
-    fn set_floating_state(&self, mode: hil::gpio::FloatingState) {
-        match mode {
-            hil::gpio::FloatingState::PullUp => self.set_pullup_pulldown(PullUpPullDown::PullUp),
-            hil::gpio::FloatingState::PullDown => {
-                self.set_pullup_pulldown(PullUpPullDown::PullDown)
-            }
-            hil::gpio::FloatingState::PullNone => {
-                self.set_pullup_pulldown(PullUpPullDown::NoPullUpPullDown)
-            }
-        }
+    fn deactivate_to_low_power(&self) {
+        let port = self.get_port();
+        let pin_mask = self.get_pin_mask();
+
+        // Set as input with no pull to minimize power
+        port.set_direction(pin_mask, false);
+        port.set_pull(pin_mask, hil::gpio::FloatingState::PullNone);
+    }
+
+    fn set_floating_state(&self, state: hil::gpio::FloatingState) {
+        let port = self.get_port();
+        let pin_mask = self.get_pin_mask();
+        port.set_pull(pin_mask, state);
     }
 
     fn floating_state(&self) -> hil::gpio::FloatingState {
-        match self.get_pullup_pulldown() {
-            PullUpPullDown::PullUp => hil::gpio::FloatingState::PullUp,
-            PullUpPullDown::PullDown => hil::gpio::FloatingState::PullDown,
-            PullUpPullDown::NoPullUpPullDown => hil::gpio::FloatingState::PullNone,
-        }
-    }
-
-    fn configuration(&self) -> hil::gpio::Configuration {
-        match self.get_mode() {
-            Mode::Input => hil::gpio::Configuration::Input,
-            Mode::GeneralPurposeOutputMode => hil::gpio::Configuration::Output,
-            Mode::AnalogMode => hil::gpio::Configuration::LowPower,
-            Mode::AlternateFunctionMode => hil::gpio::Configuration::Function,
-        }
-    }
-
-    fn is_input(&self) -> bool {
-        self.get_mode() == Mode::Input
-    }
-
-    fn is_output(&self) -> bool {
-        self.get_mode() == Mode::GeneralPurposeOutputMode
+        let port = self.get_port();
+        let pin_mask = self.get_pin_mask();
+        port.get_pull(pin_mask)
     }
 }
 
-impl hil::gpio::Output for Pin<'_> {
+impl<'a> hil::gpio::Output for Pin<'a> {
     fn set(&self) {
-        self.set_output_high();
+        let port = self.get_port();
+        let pin_mask = self.get_pin_mask();
+        port.write_output(pin_mask, true);
     }
 
     fn clear(&self) {
-        self.set_output_low();
+        let port = self.get_port();
+        let pin_mask = self.get_pin_mask();
+        port.write_output(pin_mask, false);
     }
 
     fn toggle(&self) -> bool {
-        self.toggle_output()
+        let port = self.get_port();
+        let pin_mask = self.get_pin_mask();
+        let current = port.read_output(pin_mask);
+        let new_value = !current;
+        port.write_output(pin_mask, new_value);
+        new_value
     }
 }
 
-impl hil::gpio::Input for Pin<'_> {
+impl<'a> hil::gpio::Input for Pin<'a> {
     fn read(&self) -> bool {
-        self.read_input()
+        let port = self.get_port();
+        let pin_mask = self.get_pin_mask();
+        port.read_input(pin_mask)
     }
 }
 
 impl<'a> hil::gpio::Interrupt<'a> for Pin<'a> {
-    fn enable_interrupts(&self, _mode: hil::gpio::InterruptEdge) {}
-
-    fn disable_interrupts(&self) {}
-
     fn set_client(&self, client: &'a dyn hil::gpio::Client) {
         self.client.set(client);
     }
 
+    fn enable_interrupts(&self, _mode: hil::gpio::InterruptEdge) {
+        // TODO: Implement interrupt support via MIWU (Multi-Input Wake-Up Unit)
+        // For now, interrupts are not supported
+    }
+
+    fn disable_interrupts(&self) {
+        // TODO: Implement interrupt support via MIWU
+    }
+
     fn is_pending(&self) -> bool {
+        // TODO: Implement interrupt support via MIWU
         false
     }
+}
+
+/// Debug GPIO helper functions for GPIOs 86, 87, 94, 95
+/// These functions provide low-level access to specific GPIOs for debugging purposes
+
+/// Helper function to get the port base address for a given port number
+const fn get_port_base(port_num: u8) -> StaticRef<GpioRegisters> {
+    match port_num {
+        0 => GPIO0_BASE,
+        1 => GPIO1_BASE,
+        2 => GPIO2_BASE,
+        3 => GPIO3_BASE,
+        4 => GPIO4_BASE,
+        5 => GPIO5_BASE,
+        6 => GPIO6_BASE,
+        7 => GPIO7_BASE,
+        8 => GPIO8_BASE,
+        9 => GPIO9_BASE,
+        0xA => GPIOA_BASE,
+        0xB => GPIOB_BASE,
+        0xC => GPIOC_BASE,
+        0xD => GPIOD_BASE,
+        0xE => GPIOE_BASE,
+        0xF => GPIOF_BASE,
+        _ => GPIO0_BASE, // Default fallback
+    }
+}
+
+/// Helper function to configure and set a debug GPIO
+fn configure_debug_gpio(pinid: PinId, initial_value: bool) {
+    let port_base = get_port_base(pinid.get_port_number());
+    let port = Port::new(port_base);
+    let pin_mask = pinid.get_pin_mask();
+
+    port.write_output(pin_mask, initial_value);
+    port.set_direction(pin_mask, true); // Set as output
+}
+
+/// Helper function to set a debug GPIO value
+fn set_debug_gpio(pinid: PinId, high: bool) {
+    let port_base = get_port_base(pinid.get_port_number());
+    let port = Port::new(port_base);
+    port.write_output(pinid.get_pin_mask(), high);
+}
+
+/// Enable debug GPIOs 86, 87, 94, and 95 by configuring their mux, direction, and initial value
+pub fn enable_debug_gpio86_87_95_94() {
+    unsafe {
+        // Configure pin multiplexing for debug GPIOs
+        // GPIO86 - Port 8, Pin 6
+        *(0x400C_3011_i32 as *mut u8) &= !0x80_u8; // mux: b7
+        // GPIO87 - Port 8, Pin 7
+        *(0x400C_3011_i32 as *mut u8) &= !0x20_u8; // mux: b5
+        // GPIO95 - Port 9, Pin 5
+        *(0x400C_3011_i32 as *mut u8) &= !0x18_u8; // mux: b4,b3
+        // GPIO94 - Port 9, Pin 4
+        *(0x400C_3011_i32 as *mut u8) &= !0x04_u8; // mux: b2
+    }
+
+    // Configure GPIOs as outputs with initial low value
+    configure_debug_gpio(PinId::P86, false);
+    configure_debug_gpio(PinId::P87, false);
+    configure_debug_gpio(PinId::P95, false);
+    configure_debug_gpio(PinId::P94, false);
+}
+
+/// Set GPIO86 to high or low
+pub fn set_debug_gpio86(high: bool) {
+    set_debug_gpio(PinId::P86, high);
+}
+
+/// Set GPIO87 to high or low
+pub fn set_debug_gpio87(high: bool) {
+    set_debug_gpio(PinId::P87, high);
+}
+
+/// Set GPIO94 to high or low
+pub fn set_debug_gpio94(high: bool) {
+    set_debug_gpio(PinId::P94, high);
+}
+
+/// Set GPIO95 to high or low
+pub fn set_debug_gpio95(high: bool) {
+    set_debug_gpio(PinId::P95, high);
 }
