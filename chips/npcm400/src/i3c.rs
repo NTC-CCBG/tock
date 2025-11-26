@@ -502,14 +502,24 @@ register_bitfields![u32,
 
     /// Error and Warning Register (ERRWARN)
     ERRWARN [
-        /// Overwrite error
+        /// Write Overrun
         OWRITE OFFSET(17) NUMBITS(1) [],
-        /// Overread error
+        /// Read Underrun
         OREAD OFFSET(16) NUMBITS(1) [],
-        /// NACK during HDR
+        /// S0 or S1 error
+        S0S1 OFFSET(11) NUMBITS(1) [],
+        /// HDR-DDR CRC Error
         HCRC OFFSET(10) NUMBITS(1) [],
-        /// Parity error
+        /// HDR parity error
         HPAR OFFSET(9) NUMBITS(1) [],
+        /// SDR parity Error
+        SPAR OFFSET(8) NUMBITS(1) [],
+        /// Invalid start
+        INVSTART OFFSET(4) NUMBITS(1) [],
+        /// Termination error
+        TERM OFFSET(3) NUMBITS(1) [],
+        /// Underrun NACK
+        URUNNACK OFFSET(2) NUMBITS(1) [],
         /// Underflow
         URUN OFFSET(1) NUMBITS(1) [],
         /// Overflow
@@ -1500,7 +1510,42 @@ impl<'a> I3cTarget<'a> {
         let regs = self.registers;
         let err = regs.errwarn.get();
 
-        i3c_debug!("[I3C Target driver] Error: ERRWARN=0x{:X}", err);
+        // Show errors
+        if err != 0 {
+            if regs.errwarn.is_set(ERRWARN::OWRITE) {
+                i3c_debug!("[I3C Target driver] ERRWARN: Write overrun");
+            }
+            if regs.errwarn.is_set(ERRWARN::OREAD) {
+                i3c_debug!("[I3C Target driver] ERRWARN: Read underrun");
+            }
+            if regs.errwarn.is_set(ERRWARN::S0S1) {
+                i3c_debug!("[I3C Target driver] ERRWARN: S0 or S1 error");
+            }
+            if regs.errwarn.is_set(ERRWARN::HCRC) {
+                i3c_debug!("[I3C Target driver] ERRWARN: HDR-DDR CRC error");
+            }
+            if regs.errwarn.is_set(ERRWARN::HPAR) {
+                i3c_debug!("[I3C Target driver] ERRWARN: HDR parity error");
+            }
+            if regs.errwarn.is_set(ERRWARN::SPAR) {
+                i3c_debug!("[I3C Target driver] ERRWARN: SDR parity error");
+            }
+            if regs.errwarn.is_set(ERRWARN::INVSTART) {
+                i3c_debug!("[I3C Target driver] ERRWARN: Invalid start");
+            }
+            if regs.errwarn.is_set(ERRWARN::TERM) {
+                i3c_debug!("[I3C Target driver] ERRWARN: Termination error");
+            }
+            if regs.errwarn.is_set(ERRWARN::URUNNACK) {
+                i3c_debug!("[I3C Target driver] ERRWARN: Underrun NACK");
+            }
+            if regs.errwarn.is_set(ERRWARN::URUN) {
+                i3c_debug!("[I3C Target driver] ERRWARN: Underflow");
+            }
+            if regs.errwarn.is_set(ERRWARN::ORUN) {
+                i3c_debug!("[I3C Target driver] ERRWARN: Overflow");
+            }
+        }
 
         // Clear errors by writing 1s
         regs.errwarn.set(err);
