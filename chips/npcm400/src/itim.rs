@@ -535,16 +535,6 @@ impl<'a> Alarm<'a> for Itim<'a> {
         };
         self.registers.cnt32.set(cnt_value);
 
-        debug!(
-            "[Itim] set_alarm: now={}, expire={}, ticks={}, hw_ticks={}, cnt_value={}, scale={}",
-            current,
-            expire.into_u32(),
-            ticks_until_alarm,
-            hw_ticks_until_alarm,
-            cnt_value,
-            self.hw_ticks_per_tock_tick.get()
-        );
-
         // Enable the timer and timeout interrupt
         self.registers.cts.modify(CTS::ITEN::SET + CTS::TO_IE::SET);
     }
