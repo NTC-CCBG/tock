@@ -1734,7 +1734,7 @@ impl<'a> I3cTarget<'a> {
         let delay_cycles = if self.transfer_mode.get() == TransferMode::Fifo {
             CPU_MHZ // ~1µs at 96MHz (96 cycles ÷ 4 cycles/iter = 24 iterations)
         } else {
-            CPU_MHZ / 4 // ~0.25µs for DMA mode
+            CPU_MHZ / 2 // ~0.５µs for DMA mode
         };
 
         for _ in 0..(delay_cycles / 4) {
@@ -2083,6 +2083,8 @@ impl<'a> I3cTarget<'a> {
 
         // Clear RX buffer data since it's dummy data from an unexpected transfer
         // The buffer should be clean for the next transfer
+        // NOTE: In Write case, buffer was already taken (line 2017) and given to client,
+        // so this will only clear buffer in Read/Ibi/Idle cases
         self.rx_buffer.map(|buffer| {
             for byte in buffer.iter_mut() {
                 *byte = 0;
@@ -2091,6 +2093,9 @@ impl<'a> I3cTarget<'a> {
         self.rx_len.set(0);
 
         // Start RX DMA for next transfer if in DMA mode
+        // NOTE: In Write case, buffer was taken (line 2017) and given to client, so DMA will be
+        // restarted when client returns buffer via set_rx_buffer() (as documented at line 2033).
+        // This call will safely do nothing if buffer is None (which is expected after Write).
         if self.transfer_mode.get() == TransferMode::Dma {
             self.start_rx_dma_if_needed();
         }
