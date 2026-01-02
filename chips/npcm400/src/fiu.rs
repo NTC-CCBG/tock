@@ -769,7 +769,7 @@ impl<'a> hil::flash::Flash for Fiu<'a> {
 // Helper methods for low-level flash operations
 impl<'a> Fiu<'a> {
     /// Read data from flash at specified address
-    fn read_data(&self, address: u32, buf: &mut [u8]) -> Result<(), ErrorCode> {
+    pub fn read_data(&self, address: u32, buf: &mut [u8]) -> Result<(), ErrorCode> {
         const CMD_READ: u8 = 0x03;
 
         self.uma_lock()?;

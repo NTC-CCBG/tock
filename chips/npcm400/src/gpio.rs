@@ -631,10 +631,22 @@ impl<'a> Pin<'a> {
     }
 
     /// Get the port for this pin
+    ///
+    /// # Safety
+    /// This function will panic if the ports_ref has not been initialized via setup_circular_deps().
+    /// This indicates a board initialization bug where GPIO pins are being used without proper setup.
     fn get_port(&self) -> &Port {
         self.ports_ref
             .map(|ports| ports.get_port_from_pin(self.pinid))
-            .unwrap()
+            .unwrap_or_else(|| {
+                panic!(
+                    "GPIO pin {:?} accessed before setup_circular_deps() was called. \
+                    This is a board initialization bug - GPIO pins must be properly initialized \
+                    before use. Check that GpioPorts::setup_circular_deps() is called during \
+                    platform initialization.",
+                    self.pinid
+                )
+            })
     }
 
     /// Get the pin mask for this pin

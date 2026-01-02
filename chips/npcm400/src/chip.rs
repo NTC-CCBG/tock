@@ -32,6 +32,9 @@ pub struct Npcm400DefaultPeripherals<'a> {
     pub i3c5: crate::i3c::I3cTarget<'a>,
     pub i3c6: crate::i3c::I3cTarget<'a>,
     pub pdma: &'static crate::pdma::Pdma,
+    // Note: GPIO ports are not included here to save ROM space.
+    // They should be instantiated with static_init! in the board file if needed.
+    // If GPIO is used, the board must call gpio_ports.setup_circular_deps() during init.
 }
 
 impl Npcm400DefaultPeripherals<'_> {
@@ -77,7 +80,13 @@ impl Npcm400DefaultPeripherals<'_> {
     pub fn setup_circular_deps(&'static self) {
         // Set clock reference for ITIM
         self.itim.set_clock(&self.clock);
-        // self.gpio_ports.setup_circular_deps();
+
+        // NOTE: GPIO circular dependencies are not handled here because GpioPorts
+        // is not part of Npcm400DefaultPeripherals (to save ROM space).
+        // If your board uses GPIO, you must:
+        // 1. Create GpioPorts with static_init! in your board file
+        // 2. Call gpio_ports.setup_circular_deps() during initialization
+        // Otherwise GPIO pin access will panic with a clear error message.
 
         // Register deferred call clients
         kernel::deferred_call::DeferredCallClient::register(&self.fiu);
