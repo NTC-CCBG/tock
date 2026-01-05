@@ -152,6 +152,24 @@ const CMD_WRITE_ENABLE: u8 = 0x06;
 const CMD_JEDEC_ID: u8 = 0x9F;
 const CMD_ENTER_4BA: u8 = 0xB7;
 
+/// 3-byte address commands (for addresses <= 16MB)
+const CMD_READ_3B: u8 = 0x03;
+const CMD_PAGE_PROGRAM_3B: u8 = 0x02;
+const CMD_SECTOR_ERASE_3B: u8 = 0x20;
+const CMD_BLOCK_ERASE_64K_3B: u8 = 0xD8;
+
+/// 4-byte address commands (for addresses > 16MB)
+/// These commands explicitly expect 4 address bytes and are more reliable
+/// than using EN4B mode with 3-byte commands
+const CMD_READ_4B: u8 = 0x13;
+const CMD_PAGE_PROGRAM_4B: u8 = 0x12;
+const CMD_SECTOR_ERASE_4B: u8 = 0x21;
+const CMD_BLOCK_ERASE_64K_4B: u8 = 0xDC;
+
+/// Erase sizes
+const SECTOR_SIZE: usize = 4096; // 4KB sector
+const BLOCK_SIZE_64K: usize = 65536; // 64KB block
+
 /// SFDP (Serial Flash Discoverable Parameters) related constants
 const SFDP_CMD: u8 = 0x5A;
 const SFDP_SIGNATURE: u32 = 0x50444653; // "SFDP" signature
@@ -239,6 +257,10 @@ pub struct Fiu<'a> {
     state: Cell<FlashState>,
     erase_result: Cell<Result<(), hil::flash::Error>>,
     deferred_call: DeferredCall,
+    /// Track last erased sector/block to skip redundant erases
+    last_erased_sector: Cell<Option<u32>>,
+    /// Track last erased 64KB block to skip redundant erases
+    last_erased_block: Cell<Option<u32>>,
 }
 
 // Forward declare FiuPage so we can use it in the struct definition
@@ -256,6 +278,8 @@ impl<'a> Fiu<'a> {
             state: Cell::new(FlashState::Idle),
             erase_result: Cell::new(Ok(())),
             deferred_call,
+            last_erased_sector: Cell::new(None),
+            last_erased_block: Cell::new(None),
         }
     }
 
@@ -548,14 +572,17 @@ impl<'a> Fiu<'a> {
 
         self.uma_release();
 
-        // Verify WEL bit is set (bit 1 of status register) for diagnostics
-        // Don't fail here - let the actual flash operation fail if WEL is not set
-        if let Ok(status) = self.read_status() {
-            let wel = (status & 0x02) != 0;
+        // Verify WEL bit is set (bit 1 of status register)
+        // This is critical - if WEL is not set, the subsequent write/erase will silently fail
+        let status = self.read_status()?;
+        let wel = (status & 0x02) != 0;
 
-            if !wel {
-                kernel::debug!("[FIU] WARNING: WEL bit not set after WREN - write/erase may fail!");
-            }
+        if !wel {
+            kernel::debug!(
+                "[FIU] ERROR: WEL bit not set after WREN (status=0x{:02x})",
+                status
+            );
+            return Err(ErrorCode::FAIL);
         }
 
         Ok(())
@@ -689,10 +716,7 @@ impl<'a> Fiu<'a> {
 
                 return Ok(flash_size_bytes);
             } else {
-                kernel::debug!(
-                    "[FIU] Basic Params Table too short: {} bytes",
-                    read_length
-                );
+                kernel::debug!("[FIU] Basic Params Table too short: {} bytes", read_length);
                 return Err(ErrorCode::SIZE);
             }
         }
@@ -723,37 +747,136 @@ impl<'a> Fiu<'a> {
     /// Auto-detect and configure 4-byte address mode based on SFDP flash size
     /// Returns true if 4-byte mode was enabled, false otherwise
     pub fn auto_configure_4byte_address(&self) -> Result<bool, ErrorCode> {
-        // Try to parse flash size from SFDP
-        match self.parse_flash_size_from_sfdp() {
-            Ok(flash_size) => {
-                // Enable 4-byte address mode if flash size > 16MB
-                if flash_size > 16 * 1024 * 1024 {
-                    // Update controller configuration to enable 4BA mode
-                    let mut current_config = self.config.get();
-                    current_config.enter_4ba = true;
-                    self.config.set(current_config);
-
-                    // Reconfigure the hardware with updated settings
-                    self.config_dra_mode(&current_config)?;
-
-                    // Actually enable 4-byte mode on the flash device
-                    self.enable_4byte_address()?;
-
-                    kernel::debug!(
-                        "[FIU] 4-byte address mode auto-configured for {}MB flash",
-                        flash_size / (1024 * 1024)
-                    );
-                    Ok(true)
-                } else {
-                    kernel::debug!("[FIU] Flash size <= 16MB, using 3-byte address mode");
-                    Ok(false)
-                }
+        // Try to parse flash size from SFDP first
+        let flash_size = match self.parse_flash_size_from_sfdp() {
+            Ok(size) => {
+                kernel::debug!(
+                    "[FIU] SFDP detected flash size: {} MB",
+                    size / (1024 * 1024)
+                );
+                Some(size)
             }
             Err(e) => {
-                kernel::debug!("[FIU] Failed to detect flash size from SFDP: {:?}", e);
+                kernel::debug!(
+                    "[FIU] SFDP detection failed: {:?}, trying JEDEC ID fallback",
+                    e
+                );
+                // Fallback: try to detect flash size from JEDEC ID
+                match self.parse_flash_size_from_jedec_id() {
+                    Ok(size) => {
+                        kernel::debug!(
+                            "[FIU] JEDEC ID detected flash size: {} MB",
+                            size / (1024 * 1024)
+                        );
+                        Some(size)
+                    }
+                    Err(e2) => {
+                        kernel::debug!("[FIU] JEDEC ID detection also failed: {:?}", e2);
+                        None
+                    }
+                }
+            }
+        };
+
+        match flash_size {
+            Some(size) if size > 16 * 1024 * 1024 => {
+                // Enable 4-byte address mode if flash size > 16MB
+                // Update controller configuration to enable 4BA mode
+                let mut current_config = self.config.get();
+                current_config.enter_4ba = true;
+                self.config.set(current_config);
+
+                // Reconfigure the hardware with updated settings
+                self.config_dra_mode(&current_config)?;
+
+                // Actually enable 4-byte mode on the flash device
+                self.enable_4byte_address()?;
+
+                kernel::debug!(
+                    "[FIU] 4-byte address mode auto-configured for {}MB flash",
+                    size / (1024 * 1024)
+                );
+                Ok(true)
+            }
+            Some(size) => {
+                kernel::debug!(
+                    "[FIU] Flash size {}MB <= 16MB, using 3-byte address mode",
+                    size / (1024 * 1024)
+                );
+                Ok(false)
+            }
+            None => {
+                kernel::debug!("[FIU] Could not detect flash size, using 3-byte address mode");
                 Ok(false)
             }
         }
+    }
+
+    /// Parse flash size from JEDEC ID
+    ///
+    /// The third byte of JEDEC ID typically indicates capacity:
+    /// - 0x15 = 2MB (16 Mbit)
+    /// - 0x16 = 4MB (32 Mbit)
+    /// - 0x17 = 8MB (64 Mbit)
+    /// - 0x18 = 16MB (128 Mbit)
+    /// - 0x19 = 32MB (256 Mbit)
+    /// - 0x1A = 64MB (512 Mbit)
+    /// - 0x1B = 128MB (1 Gbit)
+    /// - 0x20 = 64MB (some vendors like Micron use different encoding)
+    /// - 0x21 = 128MB
+    /// - 0x22 = 256MB
+    ///
+    /// For most SPI NOR flash chips: size = 2^capacity_byte bytes
+    /// (where capacity_byte is the third byte of JEDEC ID)
+    fn parse_flash_size_from_jedec_id(&self) -> Result<u32, ErrorCode> {
+        let jedec_id = self.read_jedec_id()?;
+
+        kernel::debug!(
+            "[FIU] JEDEC ID: {:02X} {:02X} {:02X}",
+            jedec_id[0],
+            jedec_id[1],
+            jedec_id[2]
+        );
+
+        // Validate JEDEC ID - should not be all 0x00 or 0xFF
+        if (jedec_id[0] == 0x00 && jedec_id[1] == 0x00 && jedec_id[2] == 0x00)
+            || (jedec_id[0] == 0xFF && jedec_id[1] == 0xFF && jedec_id[2] == 0xFF)
+        {
+            kernel::debug!("[FIU] Invalid JEDEC ID (all zeros or all ones)");
+            return Err(ErrorCode::NODEVICE);
+        }
+
+        let capacity_byte = jedec_id[2];
+
+        // Standard capacity encoding: 2^capacity_byte bytes
+        // Valid range: 0x10 (64KB) to 0x22 (256MB)
+        if capacity_byte >= 0x10 && capacity_byte <= 0x22 {
+            let flash_size = 1u32 << capacity_byte;
+            return Ok(flash_size);
+        }
+
+        // Some manufacturers use different encoding, try common sizes
+        let flash_size = match capacity_byte {
+            0x15 => 2 * 1024 * 1024,   // 2MB
+            0x16 => 4 * 1024 * 1024,   // 4MB
+            0x17 => 8 * 1024 * 1024,   // 8MB
+            0x18 => 16 * 1024 * 1024,  // 16MB
+            0x19 => 32 * 1024 * 1024,  // 32MB
+            0x1A => 64 * 1024 * 1024,  // 64MB
+            0x1B => 128 * 1024 * 1024, // 128MB
+            0x20 => 64 * 1024 * 1024,  // 64MB (Micron encoding)
+            0x21 => 128 * 1024 * 1024, // 128MB
+            0x22 => 256 * 1024 * 1024, // 256MB
+            _ => {
+                kernel::debug!(
+                    "[FIU] Unknown capacity byte 0x{:02X}, cannot determine flash size",
+                    capacity_byte
+                );
+                return Err(ErrorCode::NOSUPPORT);
+            }
+        };
+
+        Ok(flash_size)
     }
 }
 
@@ -891,8 +1014,10 @@ impl<'a> hil::flash::Flash for Fiu<'a> {
         // Calculate flash address from page number
         let address = page_number * FLASH_PAGE_SIZE;
 
-        // show log
-        // kernel::debug!("[FIU] addr=0x{:06X}", address);
+        // Clear cached erased sector/block since writing invalidates the optimization
+        // (The sector/block is no longer guaranteed to be all 0xFF)
+        self.last_erased_sector.set(None);
+        self.last_erased_block.set(None);
 
         // Perform synchronous write operation
         match self.write_data(address as u32, &buf.0) {
@@ -913,34 +1038,73 @@ impl<'a> hil::flash::Flash for Fiu<'a> {
     fn erase_page(&self, page_number: usize) -> Result<(), ErrorCode> {
         // Check if busy
         if self.state.get() != FlashState::Idle {
+            kernel::debug!(
+                "[FIU] erase_page({}) BUSY - state={:?}",
+                page_number,
+                self.state.get()
+            );
             return Err(ErrorCode::BUSY);
         }
 
-        // Flash sectors are typically 4KB (4096 bytes)
-        // Since our page is 256 bytes, we need to erase the sector containing this page
-        const SECTOR_SIZE: usize = 4096;
-
-        // Calculate sector address
+        // Calculate addresses
         let page_address = page_number * FLASH_PAGE_SIZE;
-        let sector_address = (page_address / SECTOR_SIZE) * SECTOR_SIZE;
+        let sector_address = ((page_address / SECTOR_SIZE) * SECTOR_SIZE) as u32;
+        let block_address = ((page_address / BLOCK_SIZE_64K) * BLOCK_SIZE_64K) as u32;
 
-        // Perform synchronous erase operation
-        let result = self.erase_sector(sector_address as u32);
+        // Check if this sector is within an already-erased 64KB block
+        let in_erased_block = self.last_erased_block.get().map_or(false, |last_block| {
+            sector_address >= last_block && sector_address < last_block + BLOCK_SIZE_64K as u32
+        });
 
-        // Always set state and trigger deferred call to deliver result (success or failure)
-        // This ensures async callbacks are always triggered even on error
-        match result {
-            Ok(_) => {
-                self.state.set(FlashState::Erase);
-                self.erase_result.set(Ok(()));
+        // Check if this sector was already erased individually
+        let sector_already_erased = self
+            .last_erased_sector
+            .get()
+            .map_or(false, |last| last == sector_address);
+
+        let skip_erase = in_erased_block || sector_already_erased;
+
+        if !skip_erase {
+            // Optimization: Use 64KB block erase if the sector is at a 64KB boundary.
+            // This is ~4x faster than 16 individual sector erases.
+            let use_block_erase = (sector_address as usize % BLOCK_SIZE_64K) == 0;
+
+            let result = if use_block_erase {
+                // Use 64KB block erase
+                let res = self.erase_block_64k(block_address);
+                if res.is_ok() {
+                    // Mark this block as erased, clear sector cache
+                    self.last_erased_block.set(Some(block_address));
+                    self.last_erased_sector.set(None);
+                }
+                res
+            } else {
+                // Use 4KB sector erase
+                let res = self.erase_sector(sector_address);
+                if res.is_ok() {
+                    self.last_erased_sector.set(Some(sector_address));
+                }
+                res
+            };
+
+            match result {
+                Ok(_) => {
+                    self.state.set(FlashState::Erase);
+                    self.erase_result.set(Ok(()));
+                }
+                Err(e) => {
+                    self.state.set(FlashState::EraseError);
+                    self.erase_result.set(Err(hil::flash::Error::FlashError));
+                    kernel::debug!("[FIU] erase_page FAILED: {:?}", e);
+                }
             }
-            Err(e) => {
-                self.state.set(FlashState::EraseError);
-                self.erase_result.set(Err(hil::flash::Error::FlashError));
-                kernel::debug!("[FIU] Erase failed: {:?}", e);
-            }
+        } else {
+            // Sector already erased (either individually or as part of a block)
+            self.state.set(FlashState::Erase);
+            self.erase_result.set(Ok(()));
         }
 
+        // Always trigger deferred call to deliver result (success or skipped)
         self.deferred_call.set();
         Ok(())
     }
@@ -948,28 +1112,67 @@ impl<'a> hil::flash::Flash for Fiu<'a> {
 
 // Helper methods for low-level flash operations
 impl<'a> Fiu<'a> {
-    /// Read data from flash at specified address
-    pub fn read_data(&self, address: u32, buf: &mut [u8]) -> Result<(), ErrorCode> {
-        const CMD_READ: u8 = 0x03;
+    /// Erase a region of flash using the most efficient erase commands.
+    ///
+    /// This method automatically uses 64KB block erase for large aligned regions
+    /// and 4KB sector erase for smaller or unaligned regions.
+    ///
+    /// For a 16MB region, this reduces erase time from ~3 minutes (4KB sectors)
+    /// to ~38 seconds (64KB blocks).
+    ///
+    /// # Arguments
+    /// * `address` - Start address (must be sector-aligned, i.e., 4KB aligned)
+    /// * `length` - Number of bytes to erase (must be a multiple of sector size)
+    ///
+    /// # Returns
+    /// * `Ok(())` on success
+    /// * `Err(ErrorCode)` on failure
+    pub fn erase_region(&self, address: u32, length: usize) -> Result<(), ErrorCode> {
+        let mut current_addr = address;
+        let end_addr = address + length as u32;
 
+        while current_addr < end_addr {
+            let remaining = (end_addr - current_addr) as usize;
+
+            // Use 64KB block erase if:
+            // 1. Address is 64KB aligned
+            // 2. At least 64KB remaining to erase
+            if (current_addr as usize % BLOCK_SIZE_64K == 0) && (remaining >= BLOCK_SIZE_64K) {
+                self.erase_block_64k(current_addr)?;
+                current_addr += BLOCK_SIZE_64K as u32;
+            } else {
+                // Use 4KB sector erase
+                self.erase_sector(current_addr)?;
+                current_addr += SECTOR_SIZE as u32;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Read data from flash at specified address
+    ///
+    /// Uses the appropriate command based on addressing mode:
+    /// - 3-byte mode (≤16MB): CMD_READ_3B (0x03) with 3 address bytes
+    /// - 4-byte mode (>16MB): CMD_READ_4B (0x13) with 4 address bytes
+    pub fn read_data(&self, address: u32, buf: &mut [u8]) -> Result<(), ErrorCode> {
         self.uma_lock()?;
 
         let config = self.config.get();
         let sw_cs = config.chip_select.sw_index();
         self.set_cs_level(sw_cs, false);
 
-        // Send READ command
-        self.uma_write_byte(CMD_READ)?;
-
-        // Send address bytes based on 4BA mode
+        // Select command and send address based on 4BA mode
         if config.enter_4ba {
-            // Send 4-byte address (32-bit)
+            // Use 4-byte address command (0x13) with 4 address bytes
+            self.uma_write_byte(CMD_READ_4B)?;
             self.uma_write_byte((address >> 24) as u8)?;
             self.uma_write_byte((address >> 16) as u8)?;
             self.uma_write_byte((address >> 8) as u8)?;
             self.uma_write_byte(address as u8)?;
         } else {
-            // Send 3-byte address (24-bit)
+            // Use 3-byte address command (0x03) with 3 address bytes
+            self.uma_write_byte(CMD_READ_3B)?;
             self.uma_write_byte((address >> 16) as u8)?;
             self.uma_write_byte((address >> 8) as u8)?;
             self.uma_write_byte(address as u8)?;
@@ -990,9 +1193,11 @@ impl<'a> Fiu<'a> {
     }
 
     /// Write data to flash at specified address (page program)
+    ///
+    /// Uses the appropriate command based on addressing mode:
+    /// - 3-byte mode (≤16MB): CMD_PAGE_PROGRAM_3B (0x02) with 3 address bytes
+    /// - 4-byte mode (>16MB): CMD_PAGE_PROGRAM_4B (0x12) with 4 address bytes
     fn write_data(&self, address: u32, data: &[u8]) -> Result<(), ErrorCode> {
-        const CMD_PAGE_PROGRAM: u8 = 0x02;
-
         // Enable write
         self.write_enable()?;
 
@@ -1002,18 +1207,17 @@ impl<'a> Fiu<'a> {
         let sw_cs = config.chip_select.sw_index();
         self.set_cs_level(sw_cs, false);
 
-        // Send PAGE PROGRAM command
-        self.uma_write_byte(CMD_PAGE_PROGRAM)?;
-
-        // Send address bytes based on 4BA mode
+        // Select command and send address based on 4BA mode
         if config.enter_4ba {
-            // Send 4-byte address (32-bit)
+            // Use 4-byte address command (0x12) with 4 address bytes
+            self.uma_write_byte(CMD_PAGE_PROGRAM_4B)?;
             self.uma_write_byte((address >> 24) as u8)?;
             self.uma_write_byte((address >> 16) as u8)?;
             self.uma_write_byte((address >> 8) as u8)?;
             self.uma_write_byte(address as u8)?;
         } else {
-            // Send 3-byte address (24-bit)
+            // Use 3-byte address command (0x02) with 3 address bytes
+            self.uma_write_byte(CMD_PAGE_PROGRAM_3B)?;
             self.uma_write_byte((address >> 16) as u8)?;
             self.uma_write_byte((address >> 8) as u8)?;
             self.uma_write_byte(address as u8)?;
@@ -1034,9 +1238,15 @@ impl<'a> Fiu<'a> {
     }
 
     /// Erase a 4KB sector
+    ///
+    /// Uses the appropriate command based on addressing mode:
+    /// - 3-byte mode (≤16MB): CMD_SECTOR_ERASE_3B (0x20) with 3 address bytes
+    /// - 4-byte mode (>16MB): CMD_SECTOR_ERASE_4B (0x21) with 4 address bytes
+    ///
+    /// The 4-byte address command (0x21) is more reliable than using the
+    /// 3-byte command with 4 address bytes after EN4B mode, as not all
+    /// flash chips fully support the latter approach.
     fn erase_sector(&self, address: u32) -> Result<(), ErrorCode> {
-        const CMD_SECTOR_ERASE: u8 = 0x20;
-
         // Enable write
         self.write_enable()?;
 
@@ -1046,18 +1256,18 @@ impl<'a> Fiu<'a> {
         let sw_cs = config.chip_select.sw_index();
         self.set_cs_level(sw_cs, false);
 
-        // Send SECTOR ERASE command
-        self.uma_write_byte(CMD_SECTOR_ERASE)?;
-
-        // Send address bytes based on 4BA mode
+        // Select command and send address based on 4BA mode
         if config.enter_4ba {
-            // Send 4-byte address (32-bit)
+            // Use 4-byte address command (0x21) with 4 address bytes
+            // This is more reliable than using 0x20 with 4 bytes after EN4B
+            self.uma_write_byte(CMD_SECTOR_ERASE_4B)?;
             self.uma_write_byte((address >> 24) as u8)?;
             self.uma_write_byte((address >> 16) as u8)?;
             self.uma_write_byte((address >> 8) as u8)?;
             self.uma_write_byte(address as u8)?;
         } else {
-            // Send 3-byte address (24-bit)
+            // Use 3-byte address command (0x20) with 3 address bytes
+            self.uma_write_byte(CMD_SECTOR_ERASE_3B)?;
             self.uma_write_byte((address >> 16) as u8)?;
             self.uma_write_byte((address >> 8) as u8)?;
             self.uma_write_byte(address as u8)?;
@@ -1075,9 +1285,66 @@ impl<'a> Fiu<'a> {
         Ok(())
     }
 
+    /// Erase a 64KB block at the specified address
+    ///
+    /// The address must be 64KB aligned. This is significantly faster than
+    /// erasing 16 individual 4KB sectors for large erase operations.
+    ///
+    /// Uses:
+    /// - 3-byte mode (≤16MB): CMD_BLOCK_ERASE_64K_3B (0xD8) with 3 address bytes
+    /// - 4-byte mode (>16MB): CMD_BLOCK_ERASE_64K_4B (0xDC) with 4 address bytes
+    fn erase_block_64k(&self, address: u32) -> Result<(), ErrorCode> {
+        // Enable write
+        self.write_enable()?;
+
+        self.uma_lock()?;
+
+        let config = self.config.get();
+        let sw_cs = config.chip_select.sw_index();
+        self.set_cs_level(sw_cs, false);
+
+        // Select command and send address based on 4BA mode
+        if config.enter_4ba {
+            // Use 4-byte address command (0xDC) with 4 address bytes
+            self.uma_write_byte(CMD_BLOCK_ERASE_64K_4B)?;
+            self.uma_write_byte((address >> 24) as u8)?;
+            self.uma_write_byte((address >> 16) as u8)?;
+            self.uma_write_byte((address >> 8) as u8)?;
+            self.uma_write_byte(address as u8)?;
+        } else {
+            // Use 3-byte address command (0xD8) with 3 address bytes
+            self.uma_write_byte(CMD_BLOCK_ERASE_64K_3B)?;
+            self.uma_write_byte((address >> 16) as u8)?;
+            self.uma_write_byte((address >> 8) as u8)?;
+            self.uma_write_byte(address as u8)?;
+        }
+
+        // Wait for erase command transmission to complete
+        self.wait_uma_complete()?;
+
+        self.set_cs_level(sw_cs, true);
+        self.uma_release();
+
+        // Wait for erase to complete (block erase takes longer, but we have
+        // generous timeout in wait_for_ready)
+        self.wait_for_ready()?;
+
+        Ok(())
+    }
+
     /// Wait for flash to be ready (WIP bit cleared)
+    ///
+    /// Flash operations like sector erase can take up to 400ms on some chips.
+    /// We use a generous timeout of ~1M iterations to ensure completion.
+    /// Each iteration involves a status register read which takes ~1-10µs,
+    /// so this provides a timeout of roughly 1-10 seconds.
     fn wait_for_ready(&self) -> Result<(), ErrorCode> {
-        const MAX_RETRIES: u32 = 10000;
+        // Increased from 10000 to 1000000 to handle slow erase operations.
+        // Sector erase can take 100-400ms, and page program can take 1-5ms.
+        // With each status read taking ~1-10µs, 1M iterations gives us
+        // approximately 1-10 seconds timeout, which is sufficient for
+        // worst-case erase times.
+        const MAX_RETRIES: u32 = 1_000_000;
 
         for _ in 0..MAX_RETRIES {
             let status = self.read_status()?;
@@ -1087,6 +1354,10 @@ impl<'a> Fiu<'a> {
             }
         }
 
+        kernel::debug!(
+            "[FIU] wait_for_ready timeout after {} iterations",
+            MAX_RETRIES
+        );
         Err(ErrorCode::FAIL)
     }
 }
