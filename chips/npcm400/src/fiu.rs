@@ -150,6 +150,13 @@ const FIU_CHK_TIMEOUT_US: u32 = 1_000;
 const CMD_READ_STATUS: u8 = 0x05;
 const CMD_WRITE_ENABLE: u8 = 0x06;
 const CMD_JEDEC_ID: u8 = 0x9F;
+const CMD_ENTER_4BA: u8 = 0xB7;
+
+/// SFDP (Serial Flash Discoverable Parameters) related constants
+const SFDP_CMD: u8 = 0x5A;
+const SFDP_SIGNATURE: u32 = 0x50444653; // "SFDP" signature
+const SFDP_HEADER_SIZE: usize = 8;
+const SFDP_PARAM_HEADER_SIZE: usize = 8;
 
 /// UMA control field constants
 const UMA_NO_DATA: u8 = 0;
@@ -578,6 +585,176 @@ impl<'a> Fiu<'a> {
 
         Ok([id0, id1, id2])
     }
+
+    /// Read SFDP data at specified address
+    /// SFDP command format: CMD(1) + ADDR(3) + DUMMY(1) + DATA(N)
+    pub fn read_sfdp(&self, addr: u32, data: &mut [u8]) -> Result<(), ErrorCode> {
+        self.uma_lock()?;
+
+        // Assert chip select
+        let sw_cs = self.config.get().chip_select.sw_index();
+        self.set_cs_level(sw_cs, false);
+
+        // Send SFDP READ command
+        self.uma_write_byte(SFDP_CMD)?;
+
+        // Send 24-bit address
+        self.uma_write_byte((addr >> 16) as u8)?;
+        self.uma_write_byte((addr >> 8) as u8)?;
+        self.uma_write_byte(addr as u8)?;
+
+        // Send dummy byte (0x00) - 8 dummy clock cycles required by SFDP spec
+        self.uma_write_byte(0x00)?;
+
+        // Read data bytes
+        for byte in data.iter_mut() {
+            *byte = self.uma_read_byte()?;
+        }
+
+        // Deassert chip select
+        self.set_cs_level(sw_cs, true);
+
+        self.uma_release();
+
+        Ok(())
+    }
+
+    /// Parse flash size from SFDP Basic Parameters Table
+    pub fn parse_flash_size_from_sfdp(&self) -> Result<u32, ErrorCode> {
+        let mut sfdp_buffer = [0u8; 16];
+        self.read_sfdp(0, &mut sfdp_buffer)?;
+
+        // Use first 8 bytes as SFDP header
+        let sfdp_header = &sfdp_buffer[0..SFDP_HEADER_SIZE];
+
+        // Check SFDP signature
+        let signature = u32::from_le_bytes([
+            sfdp_header[0],
+            sfdp_header[1],
+            sfdp_header[2],
+            sfdp_header[3],
+        ]);
+
+        if signature != SFDP_SIGNATURE {
+            kernel::debug!("[FIU] Invalid SFDP signature: 0x{:08x}", signature);
+            return Err(ErrorCode::NODEVICE);
+        }
+
+        let num_param_headers = sfdp_header[6] + 1; // NPH field + 1
+
+        // Use the first parameter table (which is always JEDEC Basic Parameters Table)
+        if num_param_headers > 0 {
+            // Use the last 8 bytes of sfdp_buffer as parameter header (bytes 8-15)
+            let param_header =
+                &sfdp_buffer[SFDP_HEADER_SIZE..SFDP_HEADER_SIZE + SFDP_PARAM_HEADER_SIZE];
+
+            let table_length = param_header[3] as u32 * 4; // Length in DWORDs * 4
+
+            // SFDP table address is 24-bit, stored as [LSB, middle, MSB] in bytes 4-6
+            let table_addr = ((param_header[6] as u32) << 16)
+                | ((param_header[5] as u32) << 8)
+                | (param_header[4] as u32);
+
+            // Read the Basic Parameters Table
+            let read_length = core::cmp::min(table_length as usize, 8);
+            let mut basic_params = [0u8; 8];
+            self.read_sfdp(table_addr, &mut basic_params[..read_length])?;
+
+            // Parse flash size from DWORD 2 (bytes 4-7)
+            // Bit 31: 0 = size <= 4GB, 1 = size > 4GB
+            // Bits 30:0: size in bits
+            if read_length >= 8 {
+                let size_dword = u32::from_le_bytes([
+                    basic_params[4],
+                    basic_params[5],
+                    basic_params[6],
+                    basic_params[7],
+                ]);
+
+                let flash_size_bytes = if (size_dword & 0x8000_0000) != 0 {
+                    // Size > 4GB, not supported for this implementation
+                    kernel::debug!("[FIU] Flash size > 4GB not supported");
+                    return Err(ErrorCode::SIZE);
+                } else {
+                    // Size <= 4GB, bits 30:0 represent size in bits
+                    let size_bits = size_dword & 0x7FFF_FFFF;
+                    (size_bits + 1) / 8 // Convert bits to bytes
+                };
+
+                kernel::debug!(
+                    "[FIU] Flash size detected: {} bytes ({} MB)",
+                    flash_size_bytes,
+                    flash_size_bytes / (1024 * 1024)
+                );
+
+                return Ok(flash_size_bytes);
+            } else {
+                kernel::debug!(
+                    "[FIU] Basic Params Table too short: {} bytes",
+                    read_length
+                );
+                return Err(ErrorCode::SIZE);
+            }
+        }
+
+        Err(ErrorCode::NODEVICE)
+    }
+
+    /// Enable 4-byte address mode on the flash device
+    pub fn enable_4byte_address(&self) -> Result<(), ErrorCode> {
+        self.uma_lock()?;
+
+        // Assert chip select
+        let sw_cs = self.config.get().chip_select.sw_index();
+        self.set_cs_level(sw_cs, false);
+
+        // Send Enter 4-Byte Address Mode command
+        self.uma_write_byte(CMD_ENTER_4BA)?;
+
+        // Deassert chip select
+        self.set_cs_level(sw_cs, true);
+
+        self.uma_release();
+
+        kernel::debug!("[FIU] Enabled 4-byte address mode");
+        Ok(())
+    }
+
+    /// Auto-detect and configure 4-byte address mode based on SFDP flash size
+    /// Returns true if 4-byte mode was enabled, false otherwise
+    pub fn auto_configure_4byte_address(&self) -> Result<bool, ErrorCode> {
+        // Try to parse flash size from SFDP
+        match self.parse_flash_size_from_sfdp() {
+            Ok(flash_size) => {
+                // Enable 4-byte address mode if flash size > 16MB
+                if flash_size > 16 * 1024 * 1024 {
+                    // Update controller configuration to enable 4BA mode
+                    let mut current_config = self.config.get();
+                    current_config.enter_4ba = true;
+                    self.config.set(current_config);
+
+                    // Reconfigure the hardware with updated settings
+                    self.config_dra_mode(&current_config)?;
+
+                    // Actually enable 4-byte mode on the flash device
+                    self.enable_4byte_address()?;
+
+                    kernel::debug!(
+                        "[FIU] 4-byte address mode auto-configured for {}MB flash",
+                        flash_size / (1024 * 1024)
+                    );
+                    Ok(true)
+                } else {
+                    kernel::debug!("[FIU] Flash size <= 16MB, using 3-byte address mode");
+                    Ok(false)
+                }
+            }
+            Err(e) => {
+                kernel::debug!("[FIU] Failed to detect flash size from SFDP: {:?}", e);
+                Ok(false)
+            }
+        }
+    }
 }
 
 // Flash HIL implementation
@@ -714,6 +891,9 @@ impl<'a> hil::flash::Flash for Fiu<'a> {
         // Calculate flash address from page number
         let address = page_number * FLASH_PAGE_SIZE;
 
+        // show log
+        // kernel::debug!("[FIU] addr=0x{:06X}", address);
+
         // Perform synchronous write operation
         match self.write_data(address as u32, &buf.0) {
             Ok(_) => {
@@ -774,16 +954,26 @@ impl<'a> Fiu<'a> {
 
         self.uma_lock()?;
 
-        let sw_cs = self.config.get().chip_select.sw_index();
+        let config = self.config.get();
+        let sw_cs = config.chip_select.sw_index();
         self.set_cs_level(sw_cs, false);
 
         // Send READ command
         self.uma_write_byte(CMD_READ)?;
 
-        // Send 24-bit address
-        self.uma_write_byte((address >> 16) as u8)?;
-        self.uma_write_byte((address >> 8) as u8)?;
-        self.uma_write_byte(address as u8)?;
+        // Send address bytes based on 4BA mode
+        if config.enter_4ba {
+            // Send 4-byte address (32-bit)
+            self.uma_write_byte((address >> 24) as u8)?;
+            self.uma_write_byte((address >> 16) as u8)?;
+            self.uma_write_byte((address >> 8) as u8)?;
+            self.uma_write_byte(address as u8)?;
+        } else {
+            // Send 3-byte address (24-bit)
+            self.uma_write_byte((address >> 16) as u8)?;
+            self.uma_write_byte((address >> 8) as u8)?;
+            self.uma_write_byte(address as u8)?;
+        }
 
         // Wait for address transmission to complete
         self.wait_uma_complete()?;
@@ -808,16 +998,26 @@ impl<'a> Fiu<'a> {
 
         self.uma_lock()?;
 
-        let sw_cs = self.config.get().chip_select.sw_index();
+        let config = self.config.get();
+        let sw_cs = config.chip_select.sw_index();
         self.set_cs_level(sw_cs, false);
 
         // Send PAGE PROGRAM command
         self.uma_write_byte(CMD_PAGE_PROGRAM)?;
 
-        // Send 24-bit address
-        self.uma_write_byte((address >> 16) as u8)?;
-        self.uma_write_byte((address >> 8) as u8)?;
-        self.uma_write_byte(address as u8)?;
+        // Send address bytes based on 4BA mode
+        if config.enter_4ba {
+            // Send 4-byte address (32-bit)
+            self.uma_write_byte((address >> 24) as u8)?;
+            self.uma_write_byte((address >> 16) as u8)?;
+            self.uma_write_byte((address >> 8) as u8)?;
+            self.uma_write_byte(address as u8)?;
+        } else {
+            // Send 3-byte address (24-bit)
+            self.uma_write_byte((address >> 16) as u8)?;
+            self.uma_write_byte((address >> 8) as u8)?;
+            self.uma_write_byte(address as u8)?;
+        }
 
         // Write data bytes
         for &byte in data.iter() {
@@ -842,16 +1042,26 @@ impl<'a> Fiu<'a> {
 
         self.uma_lock()?;
 
-        let sw_cs = self.config.get().chip_select.sw_index();
+        let config = self.config.get();
+        let sw_cs = config.chip_select.sw_index();
         self.set_cs_level(sw_cs, false);
 
         // Send SECTOR ERASE command
         self.uma_write_byte(CMD_SECTOR_ERASE)?;
 
-        // Send 24-bit address
-        self.uma_write_byte((address >> 16) as u8)?;
-        self.uma_write_byte((address >> 8) as u8)?;
-        self.uma_write_byte(address as u8)?;
+        // Send address bytes based on 4BA mode
+        if config.enter_4ba {
+            // Send 4-byte address (32-bit)
+            self.uma_write_byte((address >> 24) as u8)?;
+            self.uma_write_byte((address >> 16) as u8)?;
+            self.uma_write_byte((address >> 8) as u8)?;
+            self.uma_write_byte(address as u8)?;
+        } else {
+            // Send 3-byte address (24-bit)
+            self.uma_write_byte((address >> 16) as u8)?;
+            self.uma_write_byte((address >> 8) as u8)?;
+            self.uma_write_byte(address as u8)?;
+        }
 
         // Wait for erase command transmission to complete
         self.wait_uma_complete()?;
