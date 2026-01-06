@@ -74,6 +74,10 @@ pub struct ProcessConsoleComponent<const COMMAND_HISTORY_LEN: usize, A: 'static 
     spim_erase_fn: Option<process_console::SpimEraseFn>,
     spim_read_fn: Option<process_console::SpimReadFn>,
     spim_write_fn: Option<process_console::SpimWriteFn>,
+    fiu_erase_fn: Option<process_console::FiuEraseFn>,
+    fiu_read_fn: Option<process_console::FiuReadFn>,
+    fiu_jedec_id_fn: Option<process_console::FiuJedecIdFn>,
+    fiu_status_fn: Option<process_console::FiuStatusFn>,
 }
 
 impl<const COMMAND_HISTORY_LEN: usize, A: 'static + Alarm<'static>>
@@ -95,6 +99,10 @@ impl<const COMMAND_HISTORY_LEN: usize, A: 'static + Alarm<'static>>
             spim_erase_fn: None,
             spim_read_fn: None,
             spim_write_fn: None,
+            fiu_erase_fn: None,
+            fiu_read_fn: None,
+            fiu_jedec_id_fn: None,
+            fiu_status_fn: None,
         }
     }
 
@@ -118,6 +126,41 @@ impl<const COMMAND_HISTORY_LEN: usize, A: 'static + Alarm<'static>>
             spim_erase_fn,
             spim_read_fn,
             spim_write_fn,
+            fiu_erase_fn: None,
+            fiu_read_fn: None,
+            fiu_jedec_id_fn: None,
+            fiu_status_fn: None,
+        }
+    }
+
+    /// Create a new ProcessConsoleComponent with SPIM and FIU flash command support.
+    pub fn new_with_flash(
+        board_kernel: &'static kernel::Kernel,
+        uart_mux: &'static MuxUart,
+        alarm_mux: &'static MuxAlarm<'static, A>,
+        process_printer: &'static dyn ProcessPrinter,
+        reset_function: Option<fn() -> !>,
+        spim_erase_fn: Option<process_console::SpimEraseFn>,
+        spim_read_fn: Option<process_console::SpimReadFn>,
+        spim_write_fn: Option<process_console::SpimWriteFn>,
+        fiu_erase_fn: Option<process_console::FiuEraseFn>,
+        fiu_read_fn: Option<process_console::FiuReadFn>,
+        fiu_jedec_id_fn: Option<process_console::FiuJedecIdFn>,
+        fiu_status_fn: Option<process_console::FiuStatusFn>,
+    ) -> ProcessConsoleComponent<COMMAND_HISTORY_LEN, A> {
+        ProcessConsoleComponent {
+            board_kernel,
+            uart_mux,
+            alarm_mux,
+            process_printer,
+            reset_function,
+            spim_erase_fn,
+            spim_read_fn,
+            spim_write_fn,
+            fiu_erase_fn,
+            fiu_read_fn,
+            fiu_jedec_id_fn,
+            fiu_status_fn,
         }
     }
 }
@@ -273,6 +316,10 @@ impl<const COMMAND_HISTORY_LEN: usize, A: 'static + Alarm<'static>> Component
             self.spim_erase_fn,
             self.spim_read_fn,
             self.spim_write_fn,
+            self.fiu_erase_fn,
+            self.fiu_read_fn,
+            self.fiu_jedec_id_fn,
+            self.fiu_status_fn,
             Capability,
         ));
         hil::uart::Transmit::set_transmit_client(console_uart, console);

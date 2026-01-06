@@ -44,7 +44,7 @@ pub const DEFAULT_COMMAND_HISTORY_LEN: usize = 10;
 /// List of valid commands for printing help. Consolidated as these are
 /// displayed in a few different cases.
 const VALID_COMMANDS_STR: &[u8] =
-    b"help status list stop start fault boot terminate process kernel reset panic console-start console-stop devmem spim\r\n";
+    b"help status list stop start fault boot terminate process kernel reset panic console-start console-stop devmem spim fiu\r\n";
 
 /// Escape character for ANSI escape sequences.
 const ESC: u8 = b'\x1B';
@@ -238,6 +238,28 @@ pub type SpimReadFn = fn(addr: u32, buf: &mut [u8]) -> bool;
 /// Returns true if the write was successful, false otherwise.
 pub type SpimWriteFn = fn(addr: u32, data: &[u8]) -> bool;
 
+/// Callback function type for FIU erase.
+///
+/// Takes a flash address and length to erase.
+/// Returns true if the erase was successful, false otherwise.
+pub type FiuEraseFn = fn(addr: u32, len: u32) -> bool;
+
+/// Callback function type for reading FIU flash.
+///
+/// Takes a flash address and buffer to fill.
+/// Returns true if the read was successful, false otherwise.
+pub type FiuReadFn = fn(addr: u32, buf: &mut [u8]) -> bool;
+
+/// Callback function type for reading FIU JEDEC ID.
+///
+/// Returns the 3-byte JEDEC ID as Option<[u8; 3]>, or None on failure.
+pub type FiuJedecIdFn = fn() -> Option<[u8; 3]>;
+
+/// Callback function type for reading FIU status register.
+///
+/// Returns the status register value as Option<u8>, or None on failure.
+pub type FiuStatusFn = fn() -> Option<u8>;
+
 /// Parse hex string (with optional 0x prefix) to u32
 fn parse_hex(s: &str) -> Option<u32> {
     let s = s
@@ -332,6 +354,18 @@ pub struct ProcessConsole<
 
     /// Optional function to write SPIM flash
     spim_write_fn: Option<SpimWriteFn>,
+
+    /// Optional function to erase FIU flash sectors
+    fiu_erase_fn: Option<FiuEraseFn>,
+
+    /// Optional function to read FIU flash
+    fiu_read_fn: Option<FiuReadFn>,
+
+    /// Optional function to read FIU JEDEC ID
+    fiu_jedec_id_fn: Option<FiuJedecIdFn>,
+
+    /// Optional function to read FIU status register
+    fiu_status_fn: Option<FiuStatusFn>,
 
     /// This capsule needs to use potentially dangerous APIs related to
     /// processes, and requires a capability to access those APIs.
@@ -521,6 +555,10 @@ impl<
         spim_erase_fn: Option<SpimEraseFn>,
         spim_read_fn: Option<SpimReadFn>,
         spim_write_fn: Option<SpimWriteFn>,
+        fiu_erase_fn: Option<FiuEraseFn>,
+        fiu_read_fn: Option<FiuReadFn>,
+        fiu_jedec_id_fn: Option<FiuJedecIdFn>,
+        fiu_status_fn: Option<FiuStatusFn>,
         capability: C,
     ) -> ProcessConsole<'a, COMMAND_HISTORY_LEN, A, C> {
         ProcessConsole {
@@ -549,6 +587,10 @@ impl<
             spim_erase_fn,
             spim_read_fn,
             spim_write_fn,
+            fiu_erase_fn,
+            fiu_read_fn,
+            fiu_jedec_id_fn,
+            fiu_status_fn,
             capability,
         }
     }
@@ -1374,6 +1416,96 @@ impl<
                                     }
                                 }
                                 _ => { let _ = self.write_bytes(b"spim: erase|read|write\r\n"); }
+                            }
+                        } else if clean_str.starts_with("fiu") {
+                            let mut args = clean_str.split_whitespace();
+                            args.next(); // skip "fiu"
+                            match args.next() {
+                                Some("erase") => {
+                                    let addr = args.next().and_then(|s| parse_hex(s));
+                                    let len = args.next().and_then(|s| parse_hex(s));
+                                    match (addr, len) {
+                                        (Some(a), Some(l)) => {
+                                            if let Some(f) = self.fiu_erase_fn {
+                                                let _ = self.write_bytes(if f(a, l) { b"OK\r\n" } else { b"FAIL\r\n" });
+                                            } else {
+                                                let _ = self.write_bytes(b"N/A\r\n");
+                                            }
+                                        }
+                                        _ => { let _ = self.write_bytes(b"fiu erase <addr> <len>\r\n"); }
+                                    }
+                                }
+                                Some("read") => {
+                                    let addr = args.next().and_then(|s| parse_hex(s));
+                                    let len = args.next().and_then(|s| s.parse::<usize>().ok());
+                                    match (addr, len) {
+                                        (Some(a), Some(l)) if l <= 256 => {
+                                            if let Some(f) = self.fiu_read_fn {
+                                                let mut buf = [0u8; 256];
+                                                if f(a, &mut buf[..l]) {
+                                                    // Output in hexdump format: addr  hex bytes  |ascii|
+                                                    let mut offset = 0usize;
+                                                    while offset < l {
+                                                        let mut cw = ConsoleWriter::new();
+                                                        let _ = write(&mut cw, format_args!("{:08x}  ", a + offset as u32));
+                                                        let row_len = (l - offset).min(16);
+                                                        // Hex bytes
+                                                        for i in 0..16 {
+                                                            if i < row_len {
+                                                                let _ = write(&mut cw, format_args!("{:02x} ", buf[offset + i]));
+                                                            } else {
+                                                                let _ = write(&mut cw, format_args!("   "));
+                                                            }
+                                                            if i == 7 { let _ = write(&mut cw, format_args!(" ")); }
+                                                        }
+                                                        // ASCII
+                                                        let _ = write(&mut cw, format_args!(" |"));
+                                                        for i in 0..row_len {
+                                                            let c = buf[offset + i];
+                                                            let ch = if c >= 0x20 && c < 0x7f { c as char } else { '.' };
+                                                            let _ = write(&mut cw, format_args!("{}", ch));
+                                                        }
+                                                        let _ = write(&mut cw, format_args!("|\r\n"));
+                                                        let _ = self.write_bytes(&cw.buf[..cw.size]);
+                                                        offset += 16;
+                                                    }
+                                                } else {
+                                                    let _ = self.write_bytes(b"FAIL\r\n");
+                                                }
+                                            } else {
+                                                let _ = self.write_bytes(b"N/A\r\n");
+                                            }
+                                        }
+                                        _ => { let _ = self.write_bytes(b"fiu read <addr> <len>\r\n"); }
+                                    }
+                                }
+                                Some("id") => {
+                                    if let Some(f) = self.fiu_jedec_id_fn {
+                                        if let Some(id) = f() {
+                                            let mut cw = ConsoleWriter::new();
+                                            let _ = write(&mut cw, format_args!("JEDEC ID: {:02x} {:02x} {:02x}\r\n", id[0], id[1], id[2]));
+                                            let _ = self.write_bytes(&cw.buf[..cw.size]);
+                                        } else {
+                                            let _ = self.write_bytes(b"FAIL\r\n");
+                                        }
+                                    } else {
+                                        let _ = self.write_bytes(b"N/A\r\n");
+                                    }
+                                }
+                                Some("status") => {
+                                    if let Some(f) = self.fiu_status_fn {
+                                        if let Some(status) = f() {
+                                            let mut cw = ConsoleWriter::new();
+                                            let _ = write(&mut cw, format_args!("Status: 0x{:02x}\r\n", status));
+                                            let _ = self.write_bytes(&cw.buf[..cw.size]);
+                                        } else {
+                                            let _ = self.write_bytes(b"FAIL\r\n");
+                                        }
+                                    } else {
+                                        let _ = self.write_bytes(b"N/A\r\n");
+                                    }
+                                }
+                                _ => { let _ = self.write_bytes(b"fiu: erase|read|id|status\r\n"); }
                             }
                         } else {
                             let _ = self.write_bytes(b"Valid commands are: ");
