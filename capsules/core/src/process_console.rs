@@ -11,21 +11,21 @@ use core::cmp;
 use core::fmt;
 use core::fmt::write;
 use core::str;
+use kernel::ProcessId;
 use kernel::capabilities::ProcessManagementCapability;
 use kernel::capabilities::ProcessStartCapability;
 use kernel::hil::time::ConvertTicks;
 use kernel::utilities::cells::MapCell;
 use kernel::utilities::cells::TakeCell;
-use kernel::ProcessId;
 
+use kernel::ErrorCode;
+use kernel::Kernel;
 use kernel::debug;
 use kernel::hil::time::{Alarm, AlarmClient};
 use kernel::hil::uart;
 use kernel::introspection::KernelInfo;
 use kernel::process::{ProcessPrinter, ProcessPrinterContext, State};
 use kernel::utilities::binary_write::BinaryWrite;
-use kernel::ErrorCode;
-use kernel::Kernel;
 
 /// Buffer to hold outgoing data that is passed to the UART hardware.
 pub const WRITE_BUF_LEN: usize = 500;
@@ -44,7 +44,7 @@ pub const DEFAULT_COMMAND_HISTORY_LEN: usize = 10;
 /// List of valid commands for printing help. Consolidated as these are
 /// displayed in a few different cases.
 const VALID_COMMANDS_STR: &[u8] =
-    b"help status list stop start fault boot terminate process kernel reset panic console-start console-stop devmem\r\n";
+    b"help status list stop start fault boot terminate process kernel reset panic console-start console-stop devmem spim\r\n";
 
 /// Escape character for ANSI escape sequences.
 const ESC: u8 = b'\x1B';
@@ -220,6 +220,42 @@ pub type DevmemReadFn = fn(addr: usize, size: usize) -> Option<u64>;
 /// Returns true if the write was successful, false otherwise.
 pub type DevmemWriteFn = fn(addr: usize, size: usize, value: u64) -> bool;
 
+/// Callback function type for SPIM erase.
+///
+/// Takes a flash address and length to erase.
+/// Returns true if the erase was successful, false otherwise.
+pub type SpimEraseFn = fn(addr: u32, len: u32) -> bool;
+
+/// Callback function type for reading SPIM flash.
+///
+/// Takes a flash address, buffer pointer, and length.
+/// Returns true if the read was successful, false otherwise.
+pub type SpimReadFn = fn(addr: u32, buf: &mut [u8]) -> bool;
+
+/// Callback function type for writing SPIM flash.
+///
+/// Takes a flash address and data buffer.
+/// Returns true if the write was successful, false otherwise.
+pub type SpimWriteFn = fn(addr: u32, data: &[u8]) -> bool;
+
+/// Parse hex string (with optional 0x prefix) to u32
+fn parse_hex(s: &str) -> Option<u32> {
+    let s = s
+        .strip_prefix("0x")
+        .or_else(|| s.strip_prefix("0X"))
+        .unwrap_or(s);
+    u32::from_str_radix(s, 16).ok()
+}
+
+/// Parse hex string (with optional 0x prefix) to u8
+fn parse_hex_u8(s: &str) -> Option<u8> {
+    let s = s
+        .strip_prefix("0x")
+        .or_else(|| s.strip_prefix("0X"))
+        .unwrap_or(s);
+    u8::from_str_radix(s, 16).ok()
+}
+
 /// Track the operational state of the process console.
 #[derive(Clone, Copy, PartialEq)]
 enum ProcessConsoleState {
@@ -287,6 +323,15 @@ pub struct ProcessConsole<
 
     /// Optional function to write device memory for debugging
     devmem_write_fn: Option<DevmemWriteFn>,
+
+    /// Optional function to erase SPIM flash sectors
+    spim_erase_fn: Option<SpimEraseFn>,
+
+    /// Optional function to read SPIM flash
+    spim_read_fn: Option<SpimReadFn>,
+
+    /// Optional function to write SPIM flash
+    spim_write_fn: Option<SpimWriteFn>,
 
     /// This capsule needs to use potentially dangerous APIs related to
     /// processes, and requires a capability to access those APIs.
@@ -453,11 +498,11 @@ impl BinaryWrite for ConsoleWriter {
 }
 
 impl<
-        'a,
-        const COMMAND_HISTORY_LEN: usize,
-        A: Alarm<'a>,
-        C: ProcessManagementCapability + ProcessStartCapability,
-    > ProcessConsole<'a, COMMAND_HISTORY_LEN, A, C>
+    'a,
+    const COMMAND_HISTORY_LEN: usize,
+    A: Alarm<'a>,
+    C: ProcessManagementCapability + ProcessStartCapability,
+> ProcessConsole<'a, COMMAND_HISTORY_LEN, A, C>
 {
     pub fn new(
         uart: &'a dyn uart::UartData<'a>,
@@ -473,6 +518,9 @@ impl<
         reset_function: Option<fn() -> !>,
         devmem_read_fn: Option<DevmemReadFn>,
         devmem_write_fn: Option<DevmemWriteFn>,
+        spim_erase_fn: Option<SpimEraseFn>,
+        spim_read_fn: Option<SpimReadFn>,
+        spim_write_fn: Option<SpimWriteFn>,
         capability: C,
     ) -> ProcessConsole<'a, COMMAND_HISTORY_LEN, A, C> {
         ProcessConsole {
@@ -498,6 +546,9 @@ impl<
             reset_function,
             devmem_read_fn,
             devmem_write_fn,
+            spim_erase_fn,
+            spim_read_fn,
+            spim_write_fn,
             capability,
         }
     }
@@ -1239,6 +1290,91 @@ impl<
                                     );
                                 }
                             }
+                        } else if clean_str.starts_with("spim") {
+                            let mut args = clean_str.split_whitespace();
+                            args.next(); // skip "spim"
+                            match args.next() {
+                                Some("erase") => {
+                                    let addr = args.next().and_then(|s| parse_hex(s));
+                                    let len = args.next().and_then(|s| parse_hex(s));
+                                    match (addr, len) {
+                                        (Some(a), Some(l)) => {
+                                            if let Some(f) = self.spim_erase_fn {
+                                                let _ = self.write_bytes(if f(a, l) { b"OK\r\n" } else { b"FAIL\r\n" });
+                                            } else {
+                                                let _ = self.write_bytes(b"N/A\r\n");
+                                            }
+                                        }
+                                        _ => { let _ = self.write_bytes(b"spim erase <addr> <len>\r\n"); }
+                                    }
+                                }
+                                Some("read") => {
+                                    let addr = args.next().and_then(|s| parse_hex(s));
+                                    let len = args.next().and_then(|s| s.parse::<usize>().ok());
+                                    match (addr, len) {
+                                        (Some(a), Some(l)) if l <= 256 => {
+                                            if let Some(f) = self.spim_read_fn {
+                                                let mut buf = [0u8; 256];
+                                                if f(a, &mut buf[..l]) {
+                                                    // Output in hexdump format: addr  hex bytes  |ascii|
+                                                    let mut offset = 0usize;
+                                                    while offset < l {
+                                                        let mut cw = ConsoleWriter::new();
+                                                        let _ = write(&mut cw, format_args!("{:08x}  ", a + offset as u32));
+                                                        let row_len = (l - offset).min(16);
+                                                        // Hex bytes
+                                                        for i in 0..16 {
+                                                            if i < row_len {
+                                                                let _ = write(&mut cw, format_args!("{:02x} ", buf[offset + i]));
+                                                            } else {
+                                                                let _ = write(&mut cw, format_args!("   "));
+                                                            }
+                                                            if i == 7 { let _ = write(&mut cw, format_args!(" ")); }
+                                                        }
+                                                        // ASCII
+                                                        let _ = write(&mut cw, format_args!(" |"));
+                                                        for i in 0..row_len {
+                                                            let c = buf[offset + i];
+                                                            let ch = if c >= 0x20 && c < 0x7f { c as char } else { '.' };
+                                                            let _ = write(&mut cw, format_args!("{}", ch));
+                                                        }
+                                                        let _ = write(&mut cw, format_args!("|\r\n"));
+                                                        let _ = self.write_bytes(&cw.buf[..cw.size]);
+                                                        offset += 16;
+                                                    }
+                                                } else {
+                                                    let _ = self.write_bytes(b"FAIL\r\n");
+                                                }
+                                            } else {
+                                                let _ = self.write_bytes(b"N/A\r\n");
+                                            }
+                                        }
+                                        _ => { let _ = self.write_bytes(b"spim read <addr> <len>\r\n"); }
+                                    }
+                                }
+                                Some("write") => {
+                                    if let Some(addr) = args.next().and_then(|s| parse_hex(s)) {
+                                        let mut data = [0u8; 256];
+                                        let mut n = 0;
+                                        for s in args {
+                                            if n >= 256 { break; }
+                                            if let Some(b) = parse_hex_u8(s) { data[n] = b; n += 1; }
+                                        }
+                                        if n > 0 {
+                                            if let Some(f) = self.spim_write_fn {
+                                                let _ = self.write_bytes(if f(addr, &data[..n]) { b"OK\r\n" } else { b"FAIL\r\n" });
+                                            } else {
+                                                let _ = self.write_bytes(b"N/A\r\n");
+                                            }
+                                        } else {
+                                            let _ = self.write_bytes(b"spim write <addr> <hex>...\r\n");
+                                        }
+                                    } else {
+                                        let _ = self.write_bytes(b"spim write <addr> <hex>...\r\n");
+                                    }
+                                }
+                                _ => { let _ = self.write_bytes(b"spim: erase|read|write\r\n"); }
+                            }
                         } else {
                             let _ = self.write_bytes(b"Valid commands are: ");
                             let _ = self.write_bytes(VALID_COMMANDS_STR);
@@ -1366,11 +1502,11 @@ impl<
 }
 
 impl<
-        'a,
-        const COMMAND_HISTORY_LEN: usize,
-        A: Alarm<'a>,
-        C: ProcessManagementCapability + ProcessStartCapability,
-    > AlarmClient for ProcessConsole<'a, COMMAND_HISTORY_LEN, A, C>
+    'a,
+    const COMMAND_HISTORY_LEN: usize,
+    A: Alarm<'a>,
+    C: ProcessManagementCapability + ProcessStartCapability,
+> AlarmClient for ProcessConsole<'a, COMMAND_HISTORY_LEN, A, C>
 {
     fn alarm(&self) {
         self.prompt();
@@ -1381,11 +1517,11 @@ impl<
 }
 
 impl<
-        'a,
-        const COMMAND_HISTORY_LEN: usize,
-        A: Alarm<'a>,
-        C: ProcessManagementCapability + ProcessStartCapability,
-    > uart::TransmitClient for ProcessConsole<'a, COMMAND_HISTORY_LEN, A, C>
+    'a,
+    const COMMAND_HISTORY_LEN: usize,
+    A: Alarm<'a>,
+    C: ProcessManagementCapability + ProcessStartCapability,
+> uart::TransmitClient for ProcessConsole<'a, COMMAND_HISTORY_LEN, A, C>
 {
     fn transmitted_buffer(
         &self,
@@ -1421,11 +1557,11 @@ impl<
 }
 
 impl<
-        'a,
-        const COMMAND_HISTORY_LEN: usize,
-        A: Alarm<'a>,
-        C: ProcessManagementCapability + ProcessStartCapability,
-    > uart::ReceiveClient for ProcessConsole<'a, COMMAND_HISTORY_LEN, A, C>
+    'a,
+    const COMMAND_HISTORY_LEN: usize,
+    A: Alarm<'a>,
+    C: ProcessManagementCapability + ProcessStartCapability,
+> uart::ReceiveClient for ProcessConsole<'a, COMMAND_HISTORY_LEN, A, C>
 {
     fn received_buffer(
         &self,
